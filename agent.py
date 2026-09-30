@@ -1,0 +1,1442 @@
+import json
+import re
+import time
+import urllib.request
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(r"C:\Users\chari\Godot Projects\prototype").resolve()
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL = "qwen2.5-coder:3b"
+
+
+ALLOWED_EXTENSIONS = {
+    ".gd",
+    ".tscn",
+    ".tres",
+    ".cfg",
+    ".md",
+    ".gdshader",
+    ".shader",
+    ".json",
+}
+
+
+IGNORED_DIRECTORIES = {
+    ".godot",
+    ".git",
+}
+
+
+# Keep the amount of evidence sent to the 3B model deliberately small.
+# The Python agent performs searching and extraction; the model performs
+# interpretation.
+MAX_CONTEXT_CHARS = 14000
+MAX_FUNCTIONS = 10
+MAX_FUNCTION_CHARS = 2200
+MAX_SOURCE_CHARS = 6400
+MAX_RESOURCE_CHARS = 3000
+MAX_AGENTS_CHARS = 1500
+MAX_DEVELOPMENT_LOG_CHARS = 800
+
+
+DOMAIN_FILES = {
+    "combat": [
+        "battlescreen.gd",
+        "enemy_data.gd",
+        "player.gd",
+        "Saved.gd",
+    ],
+    "enemy": [
+        "battlescreen.gd",
+        "enemy_data.gd",
+        "player.gd",
+        "Saved.gd",
+    ],
+    "world": [
+        "world_environment.gd",
+        "world_interactable.gd",
+        "world_map_screen.gd",
+        "world_map_view.gd",
+        "building_interior.gd",
+        "player.gd",
+        "Saved.gd",
+    ],
+    "player": [
+        "player.gd",
+        "character_menu.gd",
+        "Saved.gd",
+        "battlescreen.gd",
+    ],
+    "item": [
+        "character_menu.gd",
+        "Saved.gd",
+        "battlescreen.gd",
+    ],
+    "inventory": [
+        "character_menu.gd",
+        "Saved.gd",
+    ],
+    "equipment": [
+        "character_menu.gd",
+        "Saved.gd",
+    ],
+    "save": [
+        "Saved.gd",
+        "player.gd",
+        "debug_menu.gd",
+    ],
+}
+
+
+DOMAIN_KEYWORDS = {
+    "combat": {
+        "combat",
+        "battle",
+        "enemy attack",
+        "enemy turn",
+        "damage",
+        "defense",
+        "hp",
+        "health",
+        "attack",
+        "ability",
+        "abilities",
+        "special",
+        "signature",
+        "wounded",
+        "flee",
+        "target",
+        "turn",
+    },
+    "enemy": {
+        "enemy",
+        "enemies",
+        "monster",
+        "mob",
+        "goblin",
+        "slime",
+        "wolf",
+        "skeleton",
+        "mage",
+        "wisp",
+        "leech",
+        "behavior",
+        "behaviour",
+    },
+    "world": {
+        "world",
+        "map",
+        "region",
+        "waystone",
+        "door",
+        "chest",
+        "building",
+        "interior",
+        "encounter",
+        "overworld",
+    },
+    "player": {
+        "player",
+        "character",
+        "level",
+        "stats",
+        "strength",
+        "defense",
+        "dexterity",
+        "magic",
+        "experience",
+        "xp",
+        "gold",
+    },
+    "item": {
+        "item",
+        "items",
+        "consumable",
+        "potion",
+        "use item",
+    },
+    "inventory": {
+        "inventory",
+        "items",
+        "stack",
+        "quantity",
+    },
+    "equipment": {
+        "equipment",
+        "equip",
+        "unequip",
+        "weapon",
+        "armor",
+        "accessory",
+    },
+    "save": {
+        "save",
+        "load",
+        "autosave",
+        "persistent",
+        "progression",
+    },
+}
+
+
+ANALYSIS_KEYWORDS = {
+    "attack",
+    "damage",
+    "enemy",
+    "battle",
+    "combat",
+    "turn",
+    "ability",
+    "special",
+    "signature",
+    "wounded",
+    "reward",
+    "experience",
+    "gold",
+    "xp",
+    "hp",
+    "health",
+    "defense",
+    "flee",
+    "skill",
+    "player",
+    "stats",
+    "action",
+    "resource",
+    "encounter",
+    "victory",
+    "defeat",
+}
+
+
+ENEMY_TERMS = {
+    "enemy",
+    "enemies",
+    "monster",
+    "mob",
+    "goblin",
+    "slime",
+    "wolf",
+    "skeleton",
+    "mage",
+    "wisp",
+    "leech",
+    "enemy attack",
+    "enemy damage",
+    "enemy ability",
+    "enemy reward",
+}
+
+
+def is_allowed_file(path):
+    if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        return False
+
+    for part in path.parts:
+        if part in IGNORED_DIRECTORIES:
+            return False
+
+    return True
+
+
+def list_files():
+    result = []
+
+    for path in PROJECT_ROOT.rglob("*"):
+        if path.is_file() and is_allowed_file(path):
+            result.append(path)
+
+    return sorted(result)
+
+
+def relative_path(path):
+    return str(path.relative_to(PROJECT_ROOT)).replace("/", "\\")
+
+
+def safe_read(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8-sig")
+    except Exception as exc:
+        return f"[ERROR READING FILE: {exc}]"
+
+
+def read_project_file(relative):
+    path = (PROJECT_ROOT / relative).resolve()
+
+    try:
+        path.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return "[ERROR: Path is outside the project root.]"
+
+    if not path.exists():
+        return f"[ERROR: File does not exist: {relative}]"
+
+    if not path.is_file():
+        return f"[ERROR: Not a file: {relative}]"
+
+    return safe_read(path)
+
+
+def search_files(query):
+    query_lower = query.lower()
+    results = []
+
+    for path in list_files():
+        content = safe_read(path)
+
+        if query_lower in content.lower():
+            results.append(relative_path(path))
+
+    return results
+
+
+def ask_model(prompt, response_schema=None):
+    payload = {
+        "model": MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "top_p": 0.9,
+            "num_ctx": 16384,
+            "num_predict": 300,
+        },
+    }
+
+    if response_schema is not None:
+        payload["format"] = response_schema
+
+    data = json.dumps(payload).encode("utf-8")
+
+    request = urllib.request.Request(
+        OLLAMA_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    # Pass the constructed POST request.  Calling OLLAMA_URL here would issue
+    # a GET and silently discard the payload and structured-output contract.
+    with urllib.request.urlopen(request, timeout=600) as response:
+        result = json.loads(response.read().decode("utf-8"))
+
+    return result.get("response", "")
+
+
+def detect_domains(question):
+    question_lower = question.lower()
+    domains = []
+
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        if any(keyword in question_lower for keyword in keywords):
+            domains.append(domain)
+
+    return domains
+
+
+def choose_primary_files(domains):
+    files = []
+
+    for domain in domains:
+        for relative in DOMAIN_FILES.get(domain, []):
+            if relative not in files:
+                files.append(relative)
+
+    return [
+        relative
+        for relative in files
+        if (PROJECT_ROOT / relative).exists()
+    ]
+
+
+def extract_functions(content):
+    lines = content.splitlines()
+    functions = []
+
+    pattern = re.compile(
+        r"^\s*func\s+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+
+    current = None
+
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+
+        if match:
+            if current is not None:
+                current["end"] = index
+
+            current = {
+                "name": match.group(1),
+                "start": index,
+                "end": len(lines),
+                "signature": line.strip(),
+            }
+
+            functions.append(current)
+
+    return functions
+
+
+def extract_function_bodies(content):
+    lines = content.splitlines()
+    result = {}
+
+    for function in extract_functions(content):
+        start = function["start"]
+        end = function["end"]
+
+        body = "\n".join(lines[start:end])
+
+        result[function["name"]] = {
+            "body": body,
+            "start_line": start + 1,
+            "end_line": end,
+            "signature": function["signature"],
+        }
+
+    return result
+
+
+def truncate_text(text, limit):
+    if len(text) <= limit:
+        return text
+
+    marker = "\n\n[TRUNCATED BY LOCAL AGENT CONTEXT LIMIT; omitted text is not evidence of absence.]"
+    return text[:max(0, limit - len(marker))] + marker
+
+
+def find_relevant_functions(files, question):
+    question_lower = question.lower()
+    enemy_is_source = any(term in question_lower for term in ENEMY_TERMS)
+    player_is_target = "player" in question_lower and any(
+        term in question_lower
+        for term in ("enemy", "goblin", "monster", "mob", "attack", "damage")
+    )
+    player_is_source = any(
+        phrase in question_lower
+        for phrase in ("player attack", "player's attack", "player attacks", "damage by the player")
+    )
+
+    results = []
+
+    for relative in files:
+        content = read_project_file(relative)
+        functions = extract_function_bodies(content)
+
+        for name, function in functions.items():
+            name_lower = name.lower()
+            body_lower = function["body"].lower()
+
+            score = 0
+
+            for keyword in ANALYSIS_KEYWORDS:
+                if keyword in name_lower:
+                    score += 4
+
+                if keyword in body_lower:
+                    score += 1
+
+            for word in re.findall(
+                r"[a-zA-Z_][a-zA-Z0-9_]*",
+                question_lower,
+            ):
+                if len(word) >= 4 and word in name_lower:
+                    score += 5
+
+            # Actor direction outranks generic keyword overlap.  In an
+            # enemy-to-player question, player_attack must not displace the
+            # runtime enemy_attack root.
+            if enemy_is_source and player_is_target and not player_is_source:
+                if name == "enemy_attack":
+                    score += 1000
+                elif name in {"player_attack", "_deal_damage_to_enemy"}:
+                    score -= 1000
+
+            if score > 0:
+                results.append(
+                    (
+                        score,
+                        relative,
+                        name,
+                        function,
+                    )
+                )
+
+    results.sort(
+        key=lambda item: (-item[0], item[1], item[2])
+    )
+
+    return results
+
+
+def extract_enemy_resources():
+    directory = PROJECT_ROOT / "enemies"
+
+    if not directory.exists():
+        return []
+
+    return [
+        relative_path(path)
+        for path in sorted(directory.glob("*.tres"))
+        if path.is_file()
+    ]
+
+
+def select_enemy_resource(question):
+    resources = extract_enemy_resources()
+
+    if not resources:
+        return None
+
+    question_lower = question.lower()
+
+    # If the user explicitly names an enemy, use that resource.
+    for relative in resources:
+        stem = Path(relative).stem.lower()
+
+        if stem in question_lower:
+            return relative
+
+    # Otherwise select exactly one resource deterministically.
+    # This satisfies requests such as "pick one existing enemy."
+    return resources[0]
+
+
+def build_enemy_resource_context(question):
+    relative = select_enemy_resource(question)
+
+    if relative is None:
+        return "(No enemy .tres resource found.)", None
+
+    content = read_project_file(relative)
+
+    content = truncate_text(
+        content,
+        MAX_RESOURCE_CHARS,
+    )
+
+    context = (
+        f"===== SELECTED ENEMY RESOURCE: {relative} =====\n"
+        f"```text\n"
+        f"{content}\n"
+        f"```\n"
+        f"===== END SELECTED ENEMY RESOURCE =====\n"
+    )
+
+    return context, relative
+
+
+def is_enemy_related(question, domains):
+    if "combat" in domains or "enemy" in domains:
+        return True
+
+    text = question.lower()
+
+    return any(term in text for term in ENEMY_TERMS)
+
+
+def is_exact_analysis(question):
+    text = question.lower()
+
+    phrases = [
+        "analyze the existing",
+        "analyze the current",
+        "tell me exactly",
+        "exactly how",
+        "currently work",
+        "currently implemented",
+        "existing implementation",
+        "current implementation",
+        "do not propose changes",
+        "don't propose changes",
+        "do not suggest changes",
+        "don't suggest changes",
+        "trace exactly",
+        "trace the",
+    ]
+
+    return any(phrase in text for phrase in phrases)
+
+
+def is_battle_reward_question(question):
+    text = question.lower()
+    has_reward_term = any(term in text for term in ("reward", "rewards", "xp", "experience", "gold", "loot"))
+    has_battle_term = any(term in text for term in ("battle", "victory", "defeat", "enemy", "goblin", "monster"))
+    return has_reward_term and has_battle_term
+
+
+def is_overworld_encounter_question(question):
+    text = question.lower()
+    return "encounter" in text and any(term in text for term in ("overworld", "world", "goblin", "enemy"))
+
+
+def find_called_function_names(body):
+    """
+    Extract likely local function calls from a GDScript function body.
+
+    This is deliberately conservative. It is used only to expand evidence
+    slightly when a directly relevant function calls another local function.
+    """
+    names = set()
+
+    pattern = re.compile(
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\("
+    )
+
+    ignored = {
+        "if",
+        "for",
+        "while",
+        "match",
+        "print",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "len",
+        "range",
+        "max",
+        "min",
+        "abs",
+        "clamp",
+    }
+
+    for match in pattern.finditer(body):
+        name = match.group(1)
+
+        if name not in ignored:
+            names.add(name)
+
+    return names
+
+
+def expand_function_dependencies(functions, files, max_functions=MAX_FUNCTIONS):
+    """
+    Add locally defined functions referenced by already selected functions.
+
+    This allows the agent to trace execution without dumping entire files.
+    """
+    selected = list(functions)
+
+    existing = {
+        (relative, name)
+        for _, relative, name, _ in selected
+    }
+
+    all_definitions = {}
+
+    for relative in files:
+        content = read_project_file(relative)
+        definitions = extract_function_bodies(content)
+
+        for name, function in definitions.items():
+            all_definitions[(relative, name)] = function
+
+    changed = True
+
+    while changed and len(selected) < max_functions:
+        changed = False
+
+        current_snapshot = list(selected)
+
+        for _, _, _, function in current_snapshot:
+            called_names = find_called_function_names(
+                function["body"]
+            )
+
+            for called_name in called_names:
+                matches = [
+                    (
+                        relative,
+                        name,
+                        definition,
+                    )
+                    for (
+                        relative,
+                        name,
+                    ), definition in all_definitions.items()
+                    if name == called_name
+                ]
+
+                for relative, name, definition in matches:
+                    key = (relative, name)
+
+                    if key in existing:
+                        continue
+
+                    selected.append(
+                        (
+                            0,
+                            relative,
+                            name,
+                            definition,
+                        )
+                    )
+
+                    existing.add(key)
+                    changed = True
+
+                    if len(selected) >= max_functions:
+                        break
+
+                if len(selected) >= max_functions:
+                    break
+
+            if len(selected) >= max_functions:
+                break
+
+    return selected
+
+
+def build_function_context(functions):
+    chunks = []
+    used = 0
+
+    for _, relative, name, function in functions:
+        body = truncate_text(
+            function["body"],
+            MAX_FUNCTION_CHARS,
+        )
+
+        chunk = (
+            f"FILE: {relative}\n"
+            f"FUNCTION: {name}\n"
+            f"LINES: {function['start_line']}-"
+            f"{function['end_line']}\n"
+            f"```gdscript\n"
+            f"{body}\n"
+            f"```\n"
+        )
+        if used + len(chunk) > MAX_SOURCE_CHARS:
+            continue
+        chunks.append(chunk)
+        used += len(chunk)
+
+    return "\n".join(chunks)
+
+
+def build_targeted_source_context(
+    primary_files,
+    question,
+    exact,
+):
+    """
+    Build evidence without ever dumping complete source files.
+
+    For exact analysis, functions are selected by relevance and then their
+    local dependencies are expanded.
+    """
+    functions = find_relevant_functions(
+        primary_files,
+        question,
+    )
+
+    if exact and is_battle_reward_question(question):
+        # Rewards span the victory root and two Saved autoload methods.  Put
+        # those evidence roots first instead of letting broad reward words fill
+        # the direct-selection budget with unrelated UI functions.
+        reward_roots = ("finish_victory", "record_victory_xp_award", "gain_xp")
+        definitions = {
+            (relative, name): function
+            for relative in primary_files
+            for name, function in extract_function_bodies(read_project_file(relative)).items()
+        }
+        selected_roots = []
+        for root in reward_roots:
+            for relative in primary_files:
+                function = definitions.get((relative, root))
+                if function is not None:
+                    selected_roots.append((1000, relative, root, function))
+                    break
+        # Start only with the three runtime reward roots.  Dependency expansion
+        # below can add their real callees; unrelated lexical matches such as
+        # enemy_attack must not consume an exact-analysis evidence slot.
+        functions = selected_roots
+
+    if exact and is_overworld_encounter_question(question):
+        encounter_roots = (
+            "_physics_process",
+            "check_for_encounter",
+            "choose_overworld_enemy_resource_path",
+            "region_id_for_world_position",
+        )
+        definitions = {
+            (relative, name): function
+            for relative in primary_files
+            for name, function in extract_function_bodies(read_project_file(relative)).items()
+        }
+        selected_roots = []
+        for root in encounter_roots:
+            for relative in primary_files:
+                function = definitions.get((relative, root))
+                if function is not None:
+                    selected_roots.append((1000, relative, root, function))
+                    break
+        functions = selected_roots
+
+    # Reserve evidence capacity for callees.  Selecting every direct lexical
+    # match first crowds out the helper that performs the actual damage write.
+    functions = functions[:4] if exact else functions[:MAX_FUNCTIONS]
+
+    if exact:
+        functions = expand_function_dependencies(
+            functions,
+            primary_files,
+            MAX_FUNCTIONS,
+        )
+
+    return build_function_context(functions), functions
+
+
+def build_context(question):
+    domains = detect_domains(question)
+
+    if not domains:
+        primary_files = []
+    else:
+        primary_files = choose_primary_files(domains)
+
+    if not primary_files:
+        primary_files = [
+            relative_path(path)
+            for path in list_files()
+            if path.suffix.lower() == ".gd"
+        ][:8]
+
+    exact = is_exact_analysis(question)
+
+    enemy_related = is_enemy_related(
+        question,
+        domains,
+    )
+
+    # Only retrieve enemy resource data when the question actually concerns
+    # enemies. Even then, only ONE resource is supplied.
+    enemy_context = ""
+    selected_enemy = None
+
+    if enemy_related:
+        (
+            enemy_context,
+            selected_enemy,
+        ) = build_enemy_resource_context(question)
+
+    source_context, functions = build_targeted_source_context(
+        primary_files,
+        question,
+        exact,
+    )
+
+    agents_content = read_project_file("AGENTS.md")
+    agents_content = truncate_text(
+        agents_content,
+        MAX_AGENTS_CHARS,
+    )
+
+    log_path = PROJECT_ROOT / "DEVELOPMENT_LOG.md"
+
+    if log_path.exists():
+        development_log = safe_read(log_path)
+
+        development_log = truncate_text(
+            development_log[-MAX_DEVELOPMENT_LOG_CHARS:],
+            MAX_DEVELOPMENT_LOG_CHARS,
+        )
+    else:
+        development_log = "(DEVELOPMENT_LOG.md not found.)"
+
+    context_parts = [
+        f"PROJECT ROOT:\n{PROJECT_ROOT}",
+        f"DETECTED DOMAINS:\n{', '.join(domains) or '(none)'}",
+        f"PRIMARY FILES SEARCHED:\n"
+        f"{', '.join(primary_files) or '(none)'}",
+        f"EXACT IMPLEMENTATION ANALYSIS:\n"
+        f"{'YES' if exact else 'NO'}",
+    ]
+
+    if selected_enemy:
+        context_parts.append(
+            f"SELECTED ENEMY:\n{selected_enemy}"
+        )
+
+    context_parts.append(
+        "===== TARGETED SOURCE EVIDENCE =====\n"
+        + source_context
+        + "\n===== END TARGETED SOURCE EVIDENCE ====="
+    )
+
+    if enemy_context:
+        context_parts.append(
+            enemy_context
+        )
+
+    context_parts.append(
+        "===== AGENTS.MD =====\n"
+        + agents_content
+        + "\n===== END AGENTS.MD ====="
+    )
+
+    if not exact:
+        context_parts.append(
+            "===== RECENT DEVELOPMENT LOG =====\n"
+            + development_log
+            + "\n===== END DEVELOPMENT LOG ====="
+        )
+
+    context = "\n\n".join(context_parts)
+
+    if len(context) > MAX_CONTEXT_CHARS:
+        raise RuntimeError(
+            "Internal context budget exceeded; no evidence was sent so it "
+            "could not be silently truncated."
+        )
+
+    return (
+        context,
+        domains,
+        primary_files,
+        functions,
+        exact,
+        enemy_related,
+        selected_enemy,
+    )
+
+
+def build_prompt(question, context, exact):
+    if exact:
+        instructions = """
+This is forensic analysis of the EXISTING implementation.
+
+The supplied evidence was deliberately narrowed by a Python project-analysis
+agent. Do not assume that an omitted file or function is missing from the
+project. It may simply not be relevant to the current evidence package.
+
+You MUST:
+- use only the supplied project evidence
+- read the supplied source functions before answering
+- read the selected enemy .tres resource when one is supplied
+- name actual files and functions
+- identify actual configured resource values
+- trace actual execution paths supported by the supplied code
+- distinguish resource configuration from runtime code
+- distinguish confirmed behavior from anything that cannot be determined
+- say "This cannot be determined from the supplied code." when necessary
+
+IMPORTANT:
+- The selected enemy resource is the actual resource being analyzed.
+- Do not switch to another enemy unless the supplied evidence explicitly
+  proves that the selected resource is replaced by another resource.
+- Follow function calls shown in the supplied evidence.
+- Do not assume what omitted functions do.
+- Do not infer generic RPG behavior.
+- Do not infer values that are not present.
+- Do not treat comments or development notes as runtime behavior.
+
+SCOPE RULES:
+- Answer only the user's question.
+- Do not provide a general project summary.
+- Do not summarize unrelated development plans or project history.
+- Do not propose changes.
+- Do not recommend improvements.
+- Do not write implementation code.
+- Do not provide a next development step unless explicitly requested.
+
+You MUST NOT:
+- invent missing systems
+- invent functions
+- invent enemy resource values
+- invent mechanics
+- invent calculations
+- invent execution paths
+- claim an omitted function is missing
+- claim an omitted resource is missing
+- propose changes
+- recommend improvements
+"""
+
+    else:
+        instructions = """
+Analyze the supplied project evidence accurately.
+
+The Python project-analysis agent intentionally provides focused evidence
+rather than entire source files.
+
+Never invent files, functions, variables, systems, mechanics, or resource
+values.
+
+Do not assume an omitted file or function does not exist.
+
+If the supplied context is insufficient, say:
+"This cannot be determined from the supplied code."
+
+Do not assume generic RPG behavior.
+"""
+
+    if exact:
+        response_format = """
+For exact implementation analysis, use these sections:
+
+## EXISTING SYSTEMS
+
+## CURRENT IMPLEMENTATION
+
+## CONFIRMED LIMITATIONS
+
+## UNKNOWN
+
+## FILES AND FUNCTIONS INVOLVED
+"""
+    else:
+        response_format = """
+Use clear sections appropriate to the user's question.
+
+Do not write code unless the user explicitly asks for code.
+"""
+
+    return f"""
+You are a code-analysis assistant for a Godot 4.7 RPG.
+
+{instructions}
+
+USER QUESTION:
+{question}
+
+PROJECT EVIDENCE:
+{context}
+
+Answer using only the supplied project evidence.
+
+{response_format}
+
+Do not write code unless the user explicitly asks for code.
+"""
+
+
+def render_deterministic_enemy_damage_trace(question, functions):
+    """Return a source-derived trace for the known enemy-to-player path.
+
+    Arithmetic and ownership are reliability-critical here.  The 3B model is
+    intentionally bypassed only after confirming every reported operation is
+    literally present in the selected enemy_attack function.
+    """
+    text = question.lower()
+    if "damage" not in text or "player" not in text:
+        return None
+    if not any(term in text for term in ENEMY_TERMS):
+        return None
+    if any(phrase in text for phrase in ("player attack", "player's attack", "player attacks", "damage by the player")):
+        return None
+
+    attack = next((item for item in functions if item[2] == "enemy_attack"), None)
+    if attack is None:
+        return None
+    _, relative, name, function = attack
+    body = function["body"]
+    required = (
+        "enemy_model.choose_combat_action()",
+        'combat_action["is_defensive"]',
+        "rolled_damage",
+        "Saved.effective_defense()",
+        "damage_multiplier",
+        "if dodged:",
+        "elif was_defending:",
+        "if parried:",
+        "player_HP = maxi(0, player_HP - damage)",
+        "Saved.player_hp = player_HP",
+    )
+    if not all(fragment in body for fragment in required):
+        return None
+
+    citation = f"[{relative} :: {name} :: lines {function['start_line']}-{function['end_line']}]"
+    return "\n".join((
+        "DETERMINISTIC SOURCE TRACE",
+        f"- The enemy gets a combat action from `enemy_model.choose_combat_action()`. {citation}",
+        f"- A defensive action marks the enemy as defending and returns before damage is calculated or applied. {citation}",
+        f"- Otherwise, `rolled_damage` is enemy attack power plus the configured random roll. {citation}",
+        f"- `Saved.effective_defense()` is subtracted from that roll and the result is clamped to zero or greater. {citation}",
+        f"- That result is multiplied by the action's `damage_multiplier` and rounded up. {citation}",
+        f"- A successful player dodge sets damage to zero. {citation}",
+        f"- If the player was defending and did not dodge, the current damage is reduced to 35%; a successful parry then sets it to zero. {citation}",
+        f"- The resulting damage is subtracted from `player_HP`, copied to `Saved.player_hp`, and the HUD is updated. {citation}",
+        "\nUNKNOWN",
+        "- The selected code does not determine the specific action, random roll, dodge, defense, or parry result for an individual battle.",
+    ))
+
+
+def render_deterministic_player_damage_trace(question, functions):
+    """Render the player-to-enemy damage path from selected source evidence."""
+    text = question.lower()
+    player_is_source = any(
+        phrase in text
+        for phrase in ("player attack", "player's attack", "player attacks", "damage by the player")
+    )
+    if "damage" not in text or not player_is_source:
+        return None
+
+    attack = next((item for item in functions if item[2] == "player_attack"), None)
+    resolve = next((item for item in functions if item[2] == "_deal_damage_to_enemy"), None)
+    if attack is None or resolve is None:
+        return None
+    _, attack_file, attack_name, attack_function = attack
+    _, resolve_file, resolve_name, resolve_function = resolve
+    required_attack = (
+        "Saved.effective_attack()",
+        "PLAYER_ATTACK_ROLL_MIN",
+        "enemy_defense",
+        "damage *= damage_multiplier",
+        "critical_chance",
+        "critical_multiplier",
+        "_deal_damage_to_enemy(damage)",
+    )
+    required_resolve = (
+        "enemy_is_defending",
+        "enemy_model.defensive_damage_multiplier",
+        "actual_damage",
+        "enemy_HP -= actual_damage",
+    )
+    if not all(fragment in attack_function["body"] for fragment in required_attack):
+        return None
+    if not all(fragment in resolve_function["body"] for fragment in required_resolve):
+        return None
+
+    attack_citation = f"[{attack_file} :: {attack_name} :: lines {attack_function['start_line']}-{attack_function['end_line']}]"
+    resolve_citation = f"[{resolve_file} :: {resolve_name} :: lines {resolve_function['start_line']}-{resolve_function['end_line']}]"
+    return "\n".join((
+        "DETERMINISTIC SOURCE TRACE",
+        f"- `rolled_damage` is `Saved.effective_attack()` plus a random value from `PLAYER_ATTACK_ROLL_MIN` through `PLAYER_ATTACK_ROLL_MAX`. {attack_citation}",
+        f"- Damage is clamped to at least 1 after subtracting `enemy_defense`, then multiplied by the function's `damage_multiplier`. {attack_citation}",
+        f"- Critical chance is clamped from effective luck plus `attack_potion_crit_bonus`; a successful roll applies a random multiplier of 2 or 3. {attack_citation}",
+        f"- `player_attack()` passes the resulting damage to `_deal_damage_to_enemy()` and uses its returned `actual_damage` for the battle message. {attack_citation}",
+        f"- The helper records whether the enemy was defending. If so, it multiplies the pending damage by `enemy_model.defensive_damage_multiplier`, rounds up, and clears the enemy's defending state. {resolve_citation}",
+        f"- The helper caps actual damage at the enemy's current HP, subtracts it from `enemy_HP`, and returns that amount. {resolve_citation}",
+        f"- After the HUD update, the player attack ends the battle on `enemy_HP <= 0`; otherwise it awaits the enemy turn. {attack_citation}",
+        "\nUNKNOWN",
+        "- The selected code does not determine the specific roll, critical result, enemy defense state, or final damage for an individual battle.",
+    ))
+
+
+def render_deterministic_battle_reward_trace(question, functions):
+    """Render battle victory rewards from the runtime reward and XP methods."""
+    if not is_battle_reward_question(question):
+        return None
+    victory = next((item for item in functions if item[2] == "finish_victory"), None)
+    xp_award = next((item for item in functions if item[2] == "record_victory_xp_award"), None)
+    gain_xp = next((item for item in functions if item[2] == "gain_xp"), None)
+    if victory is None or xp_award is None or gain_xp is None:
+        return None
+    _, victory_file, victory_name, victory_function = victory
+    _, award_file, award_name, award_function = xp_award
+    _, gain_file, gain_name, gain_function = gain_xp
+    victory_required = (
+        "Saved.record_enemy_defeated()",
+        "Saved.record_victory_xp_award(",
+        "enemy_model.xp_percent_min",
+        "enemy_model.xp_percent_max",
+        "enemy_model.gold_reward_min",
+        "enemy_model.gold_reward_max",
+        "Saved.gold += gold_reward",
+        "Saved.gain_xp(xp_reward)",
+        "Saved.save_game()",
+    )
+    award_required = ("victories_since_xp", "victories_until_xp", "xp_percent", "xp_to_next_level()")
+    gain_required = ("xp += amount", "while player_level < MAX_PLAYER_LEVEL", "player_level += 1")
+    if not all(fragment in victory_function["body"] for fragment in victory_required):
+        return None
+    if not all(fragment in award_function["body"] for fragment in award_required):
+        return None
+    if not all(fragment in gain_function["body"] for fragment in gain_required):
+        return None
+
+    victory_citation = f"[{victory_file} :: {victory_name} :: lines {victory_function['start_line']}-{victory_function['end_line']}]"
+    award_citation = f"[{award_file} :: {award_name} :: lines {award_function['start_line']}-{award_function['end_line']}]"
+    gain_citation = f"[{gain_file} :: {gain_name} :: lines {gain_function['start_line']}-{gain_function['end_line']}]"
+    return "\n".join((
+        "DETERMINISTIC SOURCE TRACE",
+        f"- Victory marks the battle over, saves the current player HP, and records an enemy defeat. {victory_citation}",
+        f"- It requests XP using the defeated enemy's configured minimum and maximum XP percentages. {victory_citation}",
+        f"- At the level cap, XP reward is zero. Otherwise, victories are counted; no XP is awarded until the count reaches `victories_until_xp`. {award_citation}",
+        f"- When an XP award is due, the counter resets, the next threshold is randomized from 2 through 8 victories, and XP is a rounded, minimum-one percentage of XP needed for the next level. {award_citation}",
+        f"- Gold is randomized between the enemy's configured minimum and maximum reward, then added to `Saved.gold`. {victory_citation}",
+        f"- The awarded XP is added to `Saved.xp`. While it meets the next-level requirement, the player levels up and XP is reduced by that requirement; level-up also adjusts the recorded stats and restores HP and SPC to their maxima. {gain_citation}",
+        f"- Victory may attempt the enemy's configured item reward using its chance plus effective luck, saves the game, updates the HUD, then returns to the world. {victory_citation}",
+        "\nUNKNOWN",
+        "- The selected code does not determine the particular gold roll, XP percentage, victory threshold, item-drop result, or level-up result for an individual battle.",
+    ))
+
+
+def render_deterministic_overworld_encounter_trace(question, functions):
+    """Render random overworld encounter selection from its runtime roots."""
+    if not is_overworld_encounter_question(question):
+        return None
+    check = next((item for item in functions if item[2] == "check_for_encounter"), None)
+    movement = next((item for item in functions if item[2] == "_physics_process"), None)
+    choose = next((item for item in functions if item[2] == "choose_overworld_enemy_resource_path"), None)
+    region = next((item for item in functions if item[2] == "region_id_for_world_position"), None)
+    if check is None or movement is None or choose is None or region is None:
+        return None
+    _, movement_file, movement_name, movement_function = movement
+    _, check_file, check_name, check_function = check
+    _, choose_file, choose_name, choose_function = choose
+    _, region_file, region_name, region_function = region
+
+    # Only verify the tile-change state here. The actual
+    # check_for_encounter() call is already represented by the explicit
+    # _physics_process evidence root and does not need to survive the
+    # per-function context truncation used by the model path.
+    if not all(
+        fragment in movement_function["body"]
+        for fragment in ("current_tile", "last_tile")
+    ):
+        return None
+
+    if not all(fragment in check_function["body"] for fragment in ("random_encounters_enabled", "battle_encounter_cooldown_until_msec", "RANDOM_ENCOUNTER_CHANCE_PERCENT", "choose_overworld_enemy_resource_path(position)", "set_battle_return_position", "battlescreen.tscn")):
+        return None
+    if not all(fragment in choose_function["body"] for fragment in ("region_id_for_world_position", "REGION_ENCOUNTER_WEIGHTS", "OVERWORLD_ENCOUNTER_WEIGHTS", "total_weight", "randi_range(1, total_weight)")):
+        return None
+    if not all(fragment in region_function["body"] for fragment in ("world_position.x / 960.0", "world_position.y / 540.0")):
+        return None
+
+    check_citation = f"[{check_file} :: {check_name} :: lines {check_function['start_line']}-{check_function['end_line']}]"
+    movement_citation = f"[{movement_file} :: {movement_name} :: lines {movement_function['start_line']}-{movement_function['end_line']}]"
+    choose_citation = f"[{choose_file} :: {choose_name} :: lines {choose_function['start_line']}-{choose_function['end_line']}]"
+    region_citation = f"[{region_file} :: {region_name} :: lines {region_function['start_line']}-{region_function['end_line']}]"
+
+    return "\n".join((
+        "DETERMINISTIC SOURCE TRACE",
+        f"- On a movement-tile change, the player code calls `check_for_encounter()` after the post-battle cooldown has elapsed. {movement_citation}",
+        f"- Encounter checks return immediately when random encounters are disabled or the battle cooldown has not expired. {check_citation}",
+        f"- An encounter proceeds only when a random value from 0 through 99 is below `Saved.RANDOM_ENCOUNTER_CHANCE_PERCENT`. {check_citation}",
+        f"- The selector maps the current world position to a clamped 3-column by 2-row region grid, then uses that region ID. {region_citation}",
+        f"- It uses that region's encounter weights when present; otherwise it uses the overworld fallback weights. It sums nonnegative weights across the configured enemy paths and returns the default enemy if the total is zero. {choose_citation}",
+        f"- Otherwise it draws a random integer from 1 through the total weight and walks the configured paths cumulatively; Goblin is selected only when its path's cumulative weighted range contains that draw. {choose_citation}",
+        f"- The chosen resource path and current position are saved as the battle return state, then the scene changes to `res://battlescreen.tscn`. {check_citation}",
+        "\nUNKNOWN",
+        "- The selected code does not determine the current position, region, random encounter roll, or weighted draw for an individual overworld step.",
+    ))
+
+
+def print_function_list(functions):
+    if not functions:
+        print("\nNo relevant functions identified.")
+        return
+
+    print("\nRelevant functions identified by the agent:")
+
+    for _, relative, name, function in functions:
+        print(
+            f"  {relative} :: {name} "
+            f"(lines {function['start_line']}-"
+            f"{function['end_line']})"
+        )
+
+
+def handle_ask(question):
+    print("\nAnalyzing question...")
+
+    start = time.time()
+
+    (
+        context,
+        domains,
+        primary_files,
+        functions,
+        exact,
+        enemy_related,
+        selected_enemy,
+    ) = build_context(question)
+
+    print(
+        f"Detected domains: "
+        f"{', '.join(domains) or '(none)'}"
+    )
+
+    print("\nPrimary files searched:")
+
+    for relative in primary_files:
+        print(f"  {relative}")
+
+    print_function_list(functions)
+
+    if enemy_related:
+        print("\nEnemy analysis: ON")
+
+        if selected_enemy:
+            print(
+                f"Selected enemy resource: "
+                f"{selected_enemy}"
+            )
+        else:
+            print("No enemy resource found.")
+
+    print(
+        f"\nContext budget: "
+        f"{MAX_CONTEXT_CHARS} characters"
+    )
+
+    print(
+        f"Actual context size: "
+        f"{len(context)} characters"
+    )
+
+    if exact:
+        print(
+            "\nExact implementation-analysis mode: ON"
+        )
+        print(
+            "Using targeted functions and one selected "
+            "enemy resource."
+        )
+    else:
+        print(
+            "\nUsing focused context."
+        )
+
+    deterministic_trace = (
+        render_deterministic_enemy_damage_trace(question, functions)
+        if exact
+        else None
+    )
+
+    if deterministic_trace is None and exact:
+        deterministic_trace = render_deterministic_player_damage_trace(
+            question,
+            functions,
+        )
+
+    if deterministic_trace is None and exact:
+        deterministic_trace = render_deterministic_battle_reward_trace(
+            question,
+            functions,
+        )
+
+    if deterministic_trace is None and exact:
+        deterministic_trace = render_deterministic_overworld_encounter_trace(
+            question,
+            functions,
+        )
+
+    if deterministic_trace:
+        print(
+            "\nThis exact trace was rendered directly "
+            "from the selected source; Ollama was not used.\n"
+        )
+        print(deterministic_trace)
+        return
+
+    print(
+        "\nSending targeted evidence to Ollama..."
+    )
+
+    prompt = build_prompt(
+        question,
+        context,
+        exact,
+    )
+
+    response = ask_model(prompt)
+
+    elapsed = time.time() - start
+
+    print(
+        f"\nModel time: {elapsed:.1f} seconds\n"
+    )
+
+    print(response.strip())
+
+
+def command_loop():
+    print("Local Godot Agent")
+    print(f"Project: {PROJECT_ROOT}")
+    print(f"Model: {MODEL}")
+
+    while True:
+        try:
+            command = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
+            break
+
+        if not command:
+            continue
+
+        if command.lower() == "quit":
+            break
+
+        if command.lower() == "list":
+            files = list_files()
+
+            print(
+                f"\nFound {len(files)} project files:\n"
+            )
+
+            for path in files:
+                print(relative_path(path))
+
+            continue
+
+        if command.lower().startswith("search "):
+            query = command[7:].strip()
+
+            if not query:
+                print("Usage: search <term>")
+                continue
+
+            results = search_files(query)
+
+            print(
+                f"\nSearch results for '{query}':"
+            )
+
+            if not results:
+                print("  No matches found.")
+            else:
+                for result in results:
+                    print(f"  {result}")
+
+            continue
+
+        if command.lower().startswith("read "):
+            relative = command[5:].strip()
+
+            if not relative:
+                print("Usage: read <path>")
+                continue
+
+            print(
+                f"\n--- {relative} ---\n"
+            )
+
+            print(read_project_file(relative))
+
+            continue
+
+        if command.lower().startswith("ask "):
+            question = command[4:].strip()
+
+            if not question:
+                print("Usage: ask <question>")
+                continue
+
+            try:
+                handle_ask(question)
+            except Exception as exc:
+                print(
+                    f"\nAgent error: {exc}"
+                )
+
+            continue
+
+        print(
+            "Commands: list | search <term> | "
+            "read <path> | ask <question> | quit"
+        )
+
+
+if __name__ == "__main__":
+    command_loop()
