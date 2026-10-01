@@ -818,25 +818,155 @@ def is_development_history_related(question):
 
 
 def retrieve_relevant_development_history(question):
-    """Retrieve only history sections relevant to the current question."""
-    agent_memory = read_project_file("AGENT_MEMORY.md")
-    agent_memory = truncate_text(agent_memory, MAX_AGENT_MEMORY_CHARS)
+    """Retrieve only development-log sections relevant to the question."""
+    development_log = read_project_file("DEVELOPMENT_LOG.md").strip()
+
+    if not development_log:
+        return "(Development log is empty.)"
+
+    if development_log.startswith("[ERROR:"):
+        return development_log
+
+    question_words = {
+        word.lower()
+        for word in re.findall(
+            r"[a-zA-Z_][a-zA-Z0-9_]*",
+            question,
+        )
+        if len(word) >= 4
+    }
+
+    sections = []
+    current_title = "Development Log"
+    current_lines = []
+
+    for line in development_log.splitlines():
+        if re.match(r"^#{1,6}\s+", line):
+            if current_lines:
+                sections.append(
+                    (
+                        current_title,
+                        "\n".join(current_lines).strip(),
+                    )
+                )
+            current_title = re.sub(
+                r"^#{1,6}\s+",
+                "",
+                line,
+            ).strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        sections.append(
+            (
+                current_title,
+                "\n".join(current_lines).strip(),
+            )
+        )
+
+    scored = []
+
+    for index, (title, section) in enumerate(sections):
+        section_lower = section.lower()
+        score = 0
+
+        for word in question_words:
+            if word in section_lower:
+                score += 1
+            if word in title.lower():
+                score += 3
+
+        if score > 0:
+            scored.append(
+                (
+                    score,
+                    index,
+                    section,
+                )
+            )
+
+    if not scored:
+        return "(No development-log sections match the current question.)"
+
+    scored.sort(
+        key=lambda item: (-item[0], item[1])
+    )
+
+    selected = []
+    used = 0
+
+    for _, _, section in scored:
+        separator = "\n\n" if selected else ""
+        if used + len(separator) + len(section) > MAX_DEVELOPMENT_LOG_CHARS:
+            remaining = MAX_DEVELOPMENT_LOG_CHARS - used - len(separator)
+            if remaining > 0:
+                selected.append(
+                    truncate_text(
+                        separator + section,
+                        remaining,
+                    )
+                )
+            break
+
+        selected.append(separator + section)
+        used += len(separator) + len(section)
+
+    return "".join(selected)
+
+
+def build_context(question):
+    """Build the focused evidence package sent to the model."""
+    domains = detect_domains(question)
+    primary_files = choose_primary_files(domains)
+    exact = is_exact_analysis(question)
+    enemy_related = is_enemy_related(question, domains)
+
+    agents_content = truncate_text(
+        read_project_file("AGENTS.md"),
+        MAX_AGENTS_CHARS,
+    )
+
+    source_context, functions = build_targeted_source_context(
+        primary_files,
+        question,
+        exact,
+    )
+
+    enemy_context = ""
+    selected_enemy = None
+
+    if enemy_related:
+        enemy_context, selected_enemy = build_enemy_resource_context(
+            question,
+        )
+
+    agent_memory = truncate_text(
+        read_project_file("AGENT_MEMORY.md"),
+        MAX_AGENT_MEMORY_CHARS,
+    )
 
     history_related = is_development_history_related(question)
-    development_log = (
-        retrieve_relevant_development_history(question)
-        if history_related
-        else "(Development history not retrieved; question is not history-related.)"
-    )
+
+    if history_related:
+        development_log = retrieve_relevant_development_history(
+            question,
+        )
+    else:
+        development_log = (
+            "(Development history not retrieved; "
+            "question is not history-related.)"
+        )
 
     context_parts = [
         f"PROJECT ROOT:\n{PROJECT_ROOT}",
         f"DETECTED DOMAINS:\n{', '.join(domains) or '(none)'}",
-        f"PRIMARY FILES SEARCHED:\n"
+        "PRIMARY FILES SEARCHED:\n"
         f"{', '.join(primary_files) or '(none)'}",
-        f"EXACT IMPLEMENTATION ANALYSIS:\n"
+        "EXACT IMPLEMENTATION ANALYSIS:\n"
         f"{'YES' if exact else 'NO'}",
-        f"DEVELOPMENT HISTORY RELEVANT:\n"
+        "DEVELOPMENT HISTORY RELEVANT:\n"
         f"{'YES' if history_related else 'NO'}",
     ]
 
@@ -852,9 +982,7 @@ def retrieve_relevant_development_history(question):
     )
 
     if enemy_context:
-        context_parts.append(
-            enemy_context
-        )
+        context_parts.append(enemy_context)
 
     context_parts.append(
         "===== AGENTS.MD =====\n"
