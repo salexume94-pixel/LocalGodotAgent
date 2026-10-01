@@ -37,7 +37,8 @@ MAX_FUNCTION_CHARS = 2200
 MAX_SOURCE_CHARS = 6400
 MAX_RESOURCE_CHARS = 3000
 MAX_AGENTS_CHARS = 1500
-MAX_DEVELOPMENT_LOG_CHARS = 800
+MAX_AGENT_MEMORY_CHARS = 1800
+MAX_DEVELOPMENT_LOG_CHARS = 2200
 
 
 DOMAIN_FILES = {
@@ -794,62 +795,39 @@ def build_targeted_source_context(
     return build_function_context(functions), functions
 
 
-def build_context(question):
-    domains = detect_domains(question)
-
-    if not domains:
-        primary_files = []
-    else:
-        primary_files = choose_primary_files(domains)
-
-    if not primary_files:
-        primary_files = [
-            relative_path(path)
-            for path in list_files()
-            if path.suffix.lower() == ".gd"
-        ][:8]
-
-    exact = is_exact_analysis(question)
-
-    enemy_related = is_enemy_related(
-        question,
-        domains,
+def is_development_history_related(question):
+    """Return True when the question needs historical development context."""
+    text = question.lower()
+    explicit_phrases = (
+        "development history", "development log", "history of", "what did we do",
+        "what have we done", "what changed", "what was changed", "what did i change",
+        "why did we change", "previous implementation", "previous behavior",
+        "previous behaviour", "earlier implementation", "earlier behavior",
+        "earlier behaviour", "before the change", "after the change", "recent changes",
+        "recent work", "last change", "known bug", "known bugs", "architecture decision",
+        "architectural decision", "historical", "originally", "used to", "regression",
+        "when did we add", "when was it added", "when did we remove", "when was it removed",
     )
+    if any(phrase in text for phrase in explicit_phrases):
+        return True
+    history_terms = {"previous", "prior", "earlier", "history", "historical", "recent",
+                     "originally", "changed", "change", "implemented", "added", "removed",
+                     "replaced", "migrated", "decision", "decisions", "regression"}
+    words = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text))
+    return len(words.intersection(history_terms)) >= 2
 
-    # Only retrieve enemy resource data when the question actually concerns
-    # enemies. Even then, only ONE resource is supplied.
-    enemy_context = ""
-    selected_enemy = None
 
-    if enemy_related:
-        (
-            enemy_context,
-            selected_enemy,
-        ) = build_enemy_resource_context(question)
+def retrieve_relevant_development_history(question):
+    """Retrieve only history sections relevant to the current question."""
+    agent_memory = read_project_file("AGENT_MEMORY.md")
+    agent_memory = truncate_text(agent_memory, MAX_AGENT_MEMORY_CHARS)
 
-    source_context, functions = build_targeted_source_context(
-        primary_files,
-        question,
-        exact,
+    history_related = is_development_history_related(question)
+    development_log = (
+        retrieve_relevant_development_history(question)
+        if history_related
+        else "(Development history not retrieved; question is not history-related.)"
     )
-
-    agents_content = read_project_file("AGENTS.md")
-    agents_content = truncate_text(
-        agents_content,
-        MAX_AGENTS_CHARS,
-    )
-
-    log_path = PROJECT_ROOT / "DEVELOPMENT_LOG.md"
-
-    if log_path.exists():
-        development_log = safe_read(log_path)
-
-        development_log = truncate_text(
-            development_log[-MAX_DEVELOPMENT_LOG_CHARS:],
-            MAX_DEVELOPMENT_LOG_CHARS,
-        )
-    else:
-        development_log = "(DEVELOPMENT_LOG.md not found.)"
 
     context_parts = [
         f"PROJECT ROOT:\n{PROJECT_ROOT}",
@@ -858,6 +836,8 @@ def build_context(question):
         f"{', '.join(primary_files) or '(none)'}",
         f"EXACT IMPLEMENTATION ANALYSIS:\n"
         f"{'YES' if exact else 'NO'}",
+        f"DEVELOPMENT HISTORY RELEVANT:\n"
+        f"{'YES' if history_related else 'NO'}",
     ]
 
     if selected_enemy:
@@ -882,11 +862,17 @@ def build_context(question):
         + "\n===== END AGENTS.MD ====="
     )
 
-    if not exact:
+    context_parts.append(
+        "===== AGENT_MEMORY.MD =====\n"
+        + agent_memory
+        + "\n===== END AGENT_MEMORY.MD ====="
+    )
+
+    if history_related:
         context_parts.append(
-            "===== RECENT DEVELOPMENT LOG =====\n"
+            "===== RELEVANT DEVELOPMENT HISTORY =====\n"
             + development_log
-            + "\n===== END DEVELOPMENT LOG ====="
+            + "\n===== END RELEVANT DEVELOPMENT HISTORY ====="
         )
 
     context = "\n\n".join(context_parts)
@@ -937,6 +923,8 @@ IMPORTANT:
 - Do not infer generic RPG behavior.
 - Do not infer values that are not present.
 - Do not treat comments or development notes as runtime behavior.
+- AGENT_MEMORY.md is navigation and project context, not authoritative runtime truth.
+- DEVELOPMENT_LOG.md is historical context only; source code remains authoritative for current behavior.
 
 SCOPE RULES:
 - Answer only the user's question.
@@ -969,6 +957,10 @@ rather than entire source files.
 
 Never invent files, functions, variables, systems, mechanics, or resource
 values.
+
+AGENT_MEMORY.md may help navigate the project, but source code is authoritative.
+If relevant development history is supplied, use it only to explain past decisions or changes.
+Do not mistake historical notes for current runtime behavior.
 
 Do not assume an omitted file or function does not exist.
 
