@@ -573,7 +573,7 @@ def build_verified_calculation_chain(question, functions):
         f"- DEFENSIVE BRANCH: a defensive combat action returns before damage calculation. {citation}",
         f"- BASE ROLL: rolled_damage is built from the enemy attack power plus the configured enemy attack roll. {citation}",
         f"- DEFENSE: Saved.effective_defense() is subtracted from rolled_damage, with the result clamped to zero or greater. {citation}",
-        f"- MULTIPLIER: the resulting damage is multiplied by combat_action["damage_multiplier"] and rounded up. {citation}",
+        f'- MULTIPLIER: the resulting damage is multiplied by combat_action["damage_multiplier"] and rounded up. {citation}',
         f"- DODGE: a successful player dodge sets damage to zero. {citation}",
         f"- BLOCK: if the player is defending and did not dodge, damage is reduced to 35%. {citation}",
         f"- PARRY: a successful parry sets damage to zero. {citation}",
