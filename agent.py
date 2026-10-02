@@ -1661,7 +1661,7 @@ def validate_response(response, question, verified_trace):
 
     if not user_requested_numeric_example(question):
         hypothetical_patterns = (
-            r"let['’]?s assume",
+            r"let['â]?s assumme",
             r"for example,?\s+.*\b\d+",
             r"suppose\s+.*\b\d+",
             r"assume\s+.*\b\d+",
@@ -1672,6 +1672,33 @@ def validate_response(response, question, verified_trace):
             if re.search(pattern, text):
                 issues.append("unsupported hypothetical numeric example")
                 break
+
+        if re.search(r"(?im)^\s*(?:#{1,6}\s*)?example(?:\s+calculation)?\s*:?.*$", response):
+            issues.append("requested example section")
+
+    # Reject obvious signs that Qwen stopped mid-answer.
+    incomplete_patterns = (
+        r"::\s*`[^`]*$",
+        r"\b(?:maxi|mini|ceili|randi_range)\([^)]*$",
+    )
+
+    for pattern in incomplete_patterns:
+        if re.search(pattern, text):
+            issues.append("answer appears truncated or incomplete")
+            break
+
+    if response.count("```") % 2 != 0:
+        issues.append("answer contains an unclosed code fence")
+
+    stripped = response.rstrip()
+    if stripped.endswith(("(", "[", "{", "=", "+", "-", "*", "/", "`")):
+        issues.append("answer ends with an incomplete expression")
+
+    numbered_items = re.findall(r"(?m)^\s*\d+\.\s+(.+)$", response)
+    if numbered_items:
+        last_item = numbered_items[-1].strip()
+        if re.search(r"\b(?:maxi|mini|ceili|randi_range)\([^)]*$", last_item):
+            issues.append("final numbered step is incomplete")
 
     return not issues, issues
 
