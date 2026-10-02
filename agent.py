@@ -1353,7 +1353,7 @@ SUMMARY MODE:
 - Do not write code unless the user explicitly asks for code.
 """
 
-    final_prompt = f"""f"""
+    final_prompt = f"""
 You are a code-analysis assistant for a Godot 4.7 RPG.
 
 {instructions}
