@@ -1625,6 +1625,91 @@ def print_function_list(functions):
         )
 
 
+
+def validate_response(response, question, verified_trace):
+    """
+    Perform a deterministic sanity check on Qwen's answer.
+
+    This is intentionally conservative. It does not try to judge prose quality.
+    It rejects claims that contradict a verified execution path or introduce
+    known actor/target contamination.
+    """
+    if not response or not response.strip():
+        return False, ["empty response"]
+
+    text = response.lower()
+    issues = []
+
+    enemy_to_player = (
+        verified_trace is not None
+        and "path: enemy -> player" in verified_trace.lower()
+    )
+
+    if enemy_to_player:
+        forbidden_terms = {
+            "player_attack": "player -> enemy function",
+            "_deal_damage_to_enemy": "player -> enemy helper",
+            "enemy_defense": "enemy defense is not part of the verified enemy -> player damage chain",
+        }
+
+        for term, reason in forbidden_terms.items():
+            if term.lower() in text:
+                issues.append(f"unsupported actor/target reference: {term} ({reason})")
+
+        if "xp" in text or "gold" in text or "loot" in text:
+            issues.append("unrelated reward mechanics mentioned in enemy damage answer")
+
+    if not user_requested_numeric_example(question):
+        hypothetical_patterns = (
+            r"let['’]?s assume",
+            r"for example,?\s+.*\b\d+",
+            r"suppose\s+.*\b\d+",
+            r"assume\s+.*\b\d+",
+            r"if we use\s+.*\b\d+",
+        )
+
+        for pattern in hypothetical_patterns:
+            if re.search(pattern, text):
+                issues.append("unsupported hypothetical numeric example")
+                break
+
+    return not issues, issues
+
+
+def build_deterministic_fallback(question, verified_trace):
+    """
+    Produce a concise answer directly from Python-verified facts.
+
+    This is the first safety fallback: if Qwen adds unsupported mechanics,
+    the agent can still answer without another model call.
+    """
+    if verified_trace is None:
+        return None
+
+    if "PATH: enemy -> player" in verified_trace:
+        return (
+            "Enemy damage is calculated in enemy_attack() in "
+            "battlescreen.gd and applied to the player's HP. "
+            "The verified path is:\\n"
+            "- The enemy selects a combat action with "
+            "enemy_model.choose_combat_action(). Defensive actions return "
+            "before damage calculation.\\n"
+            "- Otherwise, rolled_damage is the enemy attack power plus the "
+            "configured random attack roll.\\n"
+            "- Saved.effective_defense() is subtracted and the result is "
+            "clamped to zero or greater.\\n"
+            "- The result is multiplied by combat_action[\\\"damage_multiplier\\\"] "
+            "and rounded up.\\n"
+            "- Dodge reduces damage to zero. If the player was defending, "
+            "damage is reduced to 35%; a successful parry then reduces it to zero.\\n"
+            "- The final damage is subtracted from player_HP and persisted "
+            "to Saved.player_hp."
+        )
+
+    return None
+
+
+
 def handle_ask(question):
     print("\nAnalyzing question...")
 
