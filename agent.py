@@ -1674,7 +1674,7 @@ def validate_response(response, question, verified_trace):
                 break
 
         if re.search(r"(?im)^\s*(?:#{1,6}\s*)?example(?:\s+calculation)?\s*:?.*$", response):
-            issues.append("requested example section")
+            issues.append("unrequested example section")
 
     # Reject obvious signs that Qwen stopped mid-answer.
     incomplete_patterns = (
@@ -1717,18 +1717,18 @@ def build_deterministic_fallback(question, verified_trace):
         return (
             "Enemy damage is calculated in enemy_attack() in "
             "battlescreen.gd and applied to the player's HP. "
-            "The verified path is:\\n"
+            "The verified path is:\n"
             "- The enemy selects a combat action with "
             "enemy_model.choose_combat_action(). Defensive actions return "
-            "before damage calculation.\\n"
+            "before damage calculation.\n"
             "- Otherwise, rolled_damage is the enemy attack power plus the "
-            "configured random attack roll.\\n"
+            "configured random attack roll.\n"
             "- Saved.effective_defense() is subtracted and the result is "
-            "clamped to zero or greater.\\n"
+            "clamped to zero or greater.\n"
             "- The result is multiplied by combat_action[\\\"damage_multiplier\\\"] "
-            "and rounded up.\\n"
+            "and rounded up.\n"
             "- Dodge reduces damage to zero. If the player was defending, "
-            "damage is reduced to 35%; a successful parry then reduces it to zero.\\n"
+            "damage is reduced to 35%; a successful parry then reduces it to zero.\n"
             "- The final damage is subtracted from player_HP and persisted "
             "to Saved.player_hp."
         )
