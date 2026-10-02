@@ -92,3 +92,46 @@ Next development should preserve the deterministic trace and validator architect
 * Development-log retrieval fix is working.
 * Qwen 2.5 Coder 3B remains installed as the comparison/control model.
 * Smaller-model downgrade testing is the next planned step.
+
+## 2026-10-02 - Qwen 2.5 Coder 1.5B Baseline Test
+
+* Switched the active Ollama model from `qwen2.5-coder:3b` to `qwen2.5-coder:1.5b` for a controlled comparison.
+* The 3B model remains installed as the comparison/control model; the 7B model also remains installed.
+* Re-ran the exact same development-history question used for the 3B baseline: `ask what changes were made to enemy balance`.
+* The 1.5B test used the same targeted source-selection architecture and produced the same 15,897-character final prompt, 10,158-character context, and approximately 3,974 estimated prompt tokens.
+* Ollama total duration was 130.6 seconds and the measured model time was 132.8 seconds.
+* Ollama HTTP request time was 132.7 seconds.
+* Model load time was 2.1 seconds.
+* Prompt evaluation took 93.5 seconds.
+* Response generation took 35.0 seconds.
+* Ollama reported 3,824 prompt tokens and 311 generated tokens.
+* Compared with the Qwen 2.5 Coder 3B baseline of 344.9 seconds, the 1.5B model reduced total model time by approximately 61.5%.
+* Prompt evaluation decreased from 210.9 seconds to 93.5 seconds, while response generation decreased from 127.9 seconds to 35.0 seconds.
+* The 1.5B response remained factually unreliable for historical enemy-balance questions. It presented several specific historical changes as facts without establishing them from the supplied evidence, including claims about Goblin HP, XP, gold, reward items, reward chances, and resource-path changes.
+* The response therefore demonstrates a substantial speed improvement but does not by itself solve the source-grounding and historical-attribution problem.
+* The result supports continuing to use deterministic retrieval, verified facts, validation, and deterministic fallback paths as the factual authority rather than relying on the language model to independently reconstruct development history.
+
+### Comparison
+
+| Metric | Qwen 2.5 Coder 3B | Qwen 2.5 Coder 1.5B |
+|---|---:|---:|
+| Total model time | 344.9 s | 132.8 s |
+| Prompt evaluation | 210.9 s | 93.5 s |
+| Response generation | 127.9 s | 35.0 s |
+| Model load | 3.9 s | 2.1 s |
+| Prompt tokens | 3,824 | 3,824 |
+| Generated tokens | 600 | 311 |
+
+### Verification
+
+* `python -m py_compile .\agent.py` had already passed before the model-selection test.
+* The exact same question and retrieval architecture were used for the 1.5B comparison.
+* No agent architecture, retrieval logic, validator logic, or deterministic trace logic was changed for this test.
+* The 3B baseline remains preserved in the preceding development-log entry.
+
+### Status
+
+* Qwen 2.5 Coder 1.5B is currently the active test model.
+* Qwen 2.5 Coder 3B remains installed as the control model.
+* Qwen 2.5 Coder 7B remains installed but was not part of this comparison.
+* The next diagnostic should test 1.5B against an existing deterministic verification path, such as player-defense, before making architectural changes.
