@@ -321,10 +321,59 @@ def ask_model(prompt, response_schema=None):
         method="POST",
     )
 
-    # Pass the constructed POST request.  Calling OLLAMA_URL here would issue
+    request_start = time.time()
+
+    # Pass the constructed POST request. Calling OLLAMA_URL here would issue
     # a GET and silently discard the payload and structured-output contract.
     with urllib.request.urlopen(request, timeout=600) as response:
         result = json.loads(response.read().decode("utf-8"))
+
+    request_elapsed = time.time() - request_start
+
+    print(f"\nOllama HTTP request time: {request_elapsed:.1f} seconds")
+
+    total_duration = result.get("total_duration")
+    load_duration = result.get("load_duration")
+    prompt_eval_duration = result.get("prompt_eval_duration")
+    eval_duration = result.get("eval_duration")
+    prompt_eval_count = result.get("prompt_eval_count")
+    eval_count = result.get("eval_count")
+
+    if total_duration is not None:
+        print(
+            f"Ollama total duration: "
+            f"{total_duration / 1_000_000_000:.1f} seconds"
+        )
+
+    if load_duration is not None:
+        print(
+            f"Ollama model load time: "
+            f"{load_duration / 1_000_000_000:.1f} seconds"
+        )
+
+    if prompt_eval_duration is not None:
+        print(
+            f"Ollama prompt evaluation time: "
+            f"{prompt_eval_duration / 1_000_000_000:.1f} seconds"
+        )
+
+    if eval_duration is not None:
+        print(
+            f"Ollama response generation time: "
+            f"{eval_duration / 1_000_000_000:.1f} seconds"
+        )
+
+    if prompt_eval_count is not None:
+        print(
+            f"Ollama prompt tokens: "
+            f"{prompt_eval_count}"
+        )
+
+    if eval_count is not None:
+        print(
+            f"Ollama generated tokens: "
+            f"{eval_count}"
+        )
 
     return result.get("response", "")
 
@@ -1737,6 +1786,48 @@ def build_deterministic_fallback(question, verified_trace):
 
 
 
+def print_context_diagnostics(context, prompt):
+    """Print character/token estimates for each major context section."""
+    print("\nContext diagnostics:")
+
+    print(f"  Final prompt characters: {len(prompt)}")
+    print(f"  Context characters: {len(context)}")
+    print(f"  Prompt overhead characters: {max(0, len(prompt) - len(context))}")
+
+    sections = re.split(
+        r"(?=^===== .+? =====$)",
+        context,
+        flags=re.MULTILINE,
+    )
+
+    for section in sections:
+        section = section.strip()
+
+        if not section:
+            continue
+
+        first_line = section.splitlines()[0].strip()
+
+        if first_line.startswith("====="):
+            label = first_line.strip("=").strip()
+            print(
+                f"  {label}: "
+                f"{len(section)} chars "
+                f"(~{len(section) / 4:.0f} tokens)"
+            )
+        else:
+            print(
+                f"  Base context: "
+                f"{len(section)} chars "
+                f"(~{len(section) / 4:.0f} tokens)"
+            )
+
+    print(
+        f"  Estimated final prompt tokens: "
+        f"~{len(prompt) / 4:.0f}"
+    )
+
+
 def handle_ask(question):
     print("\nAnalyzing question...")
 
@@ -1903,6 +1994,11 @@ def handle_ask(question):
         question,
         prompt_context,
         exact,
+    )
+
+    print_context_diagnostics(
+        prompt_context,
+        prompt,
     )
 
     response = ask_model(prompt)
