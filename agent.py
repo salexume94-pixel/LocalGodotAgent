@@ -1886,7 +1886,33 @@ def handle_ask(question):
         f"\nModel time: {elapsed:.1f} seconds\n"
     )
 
-    print(response.strip())
+    valid, issues = validate_response(
+        response,
+        question,
+        verified_trace,
+    )
+
+    if valid:
+        print(response.strip())
+        return
+
+    print("\nQwen answer failed deterministic validation:")
+    for issue in issues:
+        print(f"  - {issue}")
+
+    fallback = build_deterministic_fallback(
+        question,
+        verified_trace,
+    )
+
+    if fallback is not None:
+        print("\nUsing Python-verified fallback answer:")
+        print(fallback)
+    else:
+        print(
+            "\nNo deterministic fallback is available for this question. "
+            "The unverified model answer was not displayed."
+        )
 
 
 def command_loop():
