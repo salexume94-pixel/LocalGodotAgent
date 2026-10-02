@@ -512,6 +512,85 @@ def build_verified_function_roles(functions):
     return "\n".join(lines)
 
 
+def build_verified_calculation_chain(question, functions):
+    """Build a source-derived calculation chain without unrelated numeric evidence."""
+    text = question.lower()
+
+    enemy_to_player = (
+        "damage" in text
+        and any(term in text for term in ENEMY_TERMS)
+        and not any(
+            phrase in text
+            for phrase in (
+                "player attack",
+                "player's attack",
+                "player attacks",
+                "damage by the player",
+            )
+        )
+    )
+
+    if not enemy_to_player:
+        return None
+
+    attack = next(
+        (item for item in functions if item[2] == "enemy_attack"),
+        None,
+    )
+    if attack is None:
+        return None
+
+    _, relative, name, function = attack
+    body = function["body"]
+
+    required = (
+        "enemy_model.choose_combat_action()",
+        'combat_action["is_defensive"]',
+        "rolled_damage",
+        "Saved.effective_defense()",
+        "damage_multiplier",
+        "if dodged:",
+        "elif was_defending:",
+        "if parried:",
+        "player_HP = maxi(0, player_HP - damage)",
+        "Saved.player_hp = player_HP",
+    )
+
+    if not all(fragment in body for fragment in required):
+        return None
+
+    citation = (
+        f"[{relative} :: {name} :: "
+        f"lines {function['start_line']}-{function['end_line']}]"
+    )
+
+    lines = [
+        "VERIFIED CALCULATION CHAIN",
+        "PATH: enemy -> player",
+        "Use only this chain when explaining enemy damage.",
+        f"- ACTION ROOT: enemy_attack() {citation}",
+        f"- ACTION SELECTION: enemy_model.choose_combat_action() {citation}",
+        f"- DEFENSIVE BRANCH: a defensive combat action returns before damage calculation. {citation}",
+        f"- BASE ROLL: rolled_damage is built from the enemy attack power plus the configured enemy attack roll. {citation}",
+        f"- DEFENSE: Saved.effective_defense() is subtracted from rolled_damage, with the result clamped to zero or greater. {citation}",
+        f"- MULTIPLIER: the resulting damage is multiplied by combat_action["damage_multiplier"] and rounded up. {citation}",
+        f"- DODGE: a successful player dodge sets damage to zero. {citation}",
+        f"- BLOCK: if the player is defending and did not dodge, damage is reduced to 35%. {citation}",
+        f"- PARRY: a successful parry sets damage to zero. {citation}",
+        f"- TARGET WRITE: player_HP = maxi(0, player_HP - damage). {citation}",
+        f"- PERSISTENCE: Saved.player_hp = player_HP. {citation}",
+        "EXCLUDED FROM THIS CHAIN:",
+        "- XP, gold, loot, reward-item, and reward-chance fields.",
+        "- player_attack() and _deal_damage_to_enemy().",
+        "- Any numeric example value not literally supplied by the verified source evidence.",
+        "NUMERIC EXAMPLE RULE:",
+        "- Do not invent a hypothetical numeric example unless the user explicitly asks for one.",
+        "- If the user asks for a numeric example, use only values directly established by the supplied source evidence and identify their source.",
+    ]
+
+    return "\n".join(lines)
+
+
 def extract_enemy_resources():
     directory = PROJECT_ROOT / "enemies"
 
@@ -1206,6 +1285,16 @@ For every important numeric or state-changing claim, identify the source
 function that supports it. Do not silently combine operations from unrelated
 functions.
 
+CALCULATION INTEGRITY:
+- When VERIFIED CALCULATION CHAIN is present, it is the authoritative calculation path.
+- Do not merge values or operations from unrelated functions, reward systems, or resource fields into that chain.
+- Do not create hypothetical numeric examples unless the user explicitly asks for one.
+- Never invent constants, stat values, random-roll results, multipliers, HP values, XP values, gold values, or item values.
+- A value appearing in the selected enemy resource is not automatically an input to the calculation. Use it only when the supplied runtime code explicitly connects that field to the calculation.
+- XP, gold, loot, reward-item, and reward-chance fields are excluded from enemy damage unless the supplied source explicitly proves a connection.
+- Preserve the exact order of operations shown by the verified calculation chain.
+- If a requested numeric result cannot be calculated from supplied evidence, state: "This cannot be determined from the supplied code."
+
 {response_format}
 
 Do not write code unless the user explicitly asks for code.
@@ -1528,6 +1617,21 @@ def handle_ask(question):
         + "\n===== END VERIFIED FUNCTION ROLES ====="
     )
 
+    verified_calculation = build_verified_calculation_chain(
+        question,
+        functions,
+    )
+
+    if verified_calculation:
+        prompt_context += (
+            "\n\n===== VERIFIED CALCULATION CHAIN =====\n"
+            + verified_calculation
+            + "\n===== END VERIFIED CALCULATION CHAIN ====="
+        )
+        print(
+            "\nVerified calculation chain added to the model context."
+        )
+
     if verified_trace:
         prompt_context += (
             "\n\n===== VERIFIED SOURCE FACTS =====\n"
@@ -1597,55 +1701,3 @@ def command_loop():
                 continue
 
             results = search_files(query)
-
-            print(
-                f"\nSearch results for '{query}':"
-            )
-
-            if not results:
-                print("  No matches found.")
-            else:
-                for result in results:
-                    print(f"  {result}")
-
-            continue
-
-        if command.lower().startswith("read "):
-            relative = command[5:].strip()
-
-            if not relative:
-                print("Usage: read <path>")
-                continue
-
-            print(
-                f"\n--- {relative} ---\n"
-            )
-
-            print(read_project_file(relative))
-
-            continue
-
-        if command.lower().startswith("ask "):
-            question = command[4:].strip()
-
-            if not question:
-                print("Usage: ask <question>")
-                continue
-
-            try:
-                handle_ask(question)
-            except Exception as exc:
-                print(
-                    f"\nAgent error: {exc}"
-                )
-
-            continue
-
-        print(
-            "Commands: list | search <term> | "
-            "read <path> | ask <question> | quit"
-        )
-
-
-if __name__ == "__main__":
-    command_loop()
