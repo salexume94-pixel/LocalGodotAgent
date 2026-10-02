@@ -1212,6 +1212,16 @@ def build_context(question):
     )
 
 
+def print_prompt_component_diagnostics(question, context, instructions, response_format, final_prompt):
+    print("\nPrompt component diagnostics:")
+    print(f"  Instruction block: {len(instructions)} chars")
+    print(f"  Response format: {len(response_format)} chars")
+    print(f"  Question: {len(question)} chars")
+    print(f"  Context: {len(context)} chars")
+    print(f"  Final prompt: {len(final_prompt)} chars")
+    print(f"  Prompt overhead beyond question/context: {len(final_prompt) - len(question) - len(context)} chars")
+
+
 def build_prompt(question, context, exact):
     if exact:
         instructions = """
@@ -1343,7 +1353,7 @@ SUMMARY MODE:
 - Do not write code unless the user explicitly asks for code.
 """
 
-    return f"""
+    final_prompt = f"""f"""
 You are a code-analysis assistant for a Godot 4.7 RPG.
 
 {instructions}
@@ -1405,7 +1415,16 @@ Do not write code unless the user explicitly asks for code.
 
 
 def render_deterministic_enemy_damage_trace(question, functions):
-    """Return a source-derived trace for the known enemy-to-player path.
+"""
+    print_prompt_component_diagnostics(
+        question,
+        context,
+        instructions,
+        response_format,
+        final_prompt,
+    )
+    return final_prompt
+Return a source-derived trace for the known enemy-to-player path.
 
     Arithmetic and ownership are reliability-critical here.  The 3B model is
     intentionally bypassed only after confirming every reported operation is
