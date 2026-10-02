@@ -415,13 +415,15 @@ def truncate_text(text, limit):
 def find_relevant_functions(files, question):
     question_lower = question.lower()
     enemy_is_source = any(term in question_lower for term in ENEMY_TERMS)
-    player_is_target = "player" in question_lower and any(
-        term in question_lower
-        for term in ("enemy", "goblin", "monster", "mob", "attack", "damage")
-    )
     player_is_source = any(
         phrase in question_lower
         for phrase in ("player attack", "player's attack", "player attacks", "damage by the player")
+    )
+
+    enemy_to_player_question = (
+        enemy_is_source
+        and "damage" in question_lower
+        and not player_is_source
     )
 
     results = []
@@ -450,14 +452,14 @@ def find_relevant_functions(files, question):
                 if len(word) >= 4 and word in name_lower:
                     score += 5
 
-            # Actor direction outranks generic keyword overlap.  In an
-            # enemy-to-player question, player_attack must not displace the
-            # runtime enemy_attack root.
-            if enemy_is_source and player_is_target and not player_is_source:
+            # Actor direction is a hard evidence filter. For enemy damage,
+            # player-to-enemy functions are excluded completely rather than
+            # merely ranked lower.
+            if enemy_to_player_question:
+                if name in {"player_attack", "_deal_damage_to_enemy"}:
+                    continue
                 if name == "enemy_attack":
                     score += 1000
-                elif name in {"player_attack", "_deal_damage_to_enemy"}:
-                    score -= 1000
 
             if score > 0:
                 results.append(
@@ -474,6 +476,40 @@ def find_relevant_functions(files, question):
     )
 
     return results
+
+
+def infer_function_role(name, body):
+    """Infer actor/target from literal HP mutations in the supplied function."""
+    player_mutation = (
+        "player_HP =" in body
+        or "player_HP -=" in body
+        or "Saved.player_hp =" in body
+    )
+    enemy_mutation = (
+        "enemy_HP =" in body
+        or "enemy_HP -=" in body
+    )
+
+    if player_mutation and not enemy_mutation:
+        return "enemy -> player"
+    if enemy_mutation and not player_mutation:
+        return "player -> enemy"
+    if name == "enemy_attack":
+        return "enemy -> player (runtime attack root)"
+    if name in {"player_attack", "_deal_damage_to_enemy"}:
+        return "player -> enemy"
+    return "not determinable from direct HP mutations"
+
+
+def build_verified_function_roles(functions):
+    """Build compact source-derived actor/target facts for the model."""
+    lines = ["VERIFIED FUNCTION ROLES"]
+    for _, relative, name, function in functions:
+        lines.append(
+            f"- {relative} :: {name} :: "
+            f"{infer_function_role(name, function['body'])}"
+        )
+    return "\n".join(lines)
 
 
 def extract_enemy_resources():
@@ -1484,6 +1520,13 @@ def handle_ask(question):
         )
 
     prompt_context = context
+
+    verified_roles = build_verified_function_roles(functions)
+    prompt_context += (
+        "\n\n===== VERIFIED FUNCTION ROLES =====\n"
+        + verified_roles
+        + "\n===== END VERIFIED FUNCTION ROLES ====="
+    )
 
     if verified_trace:
         prompt_context += (
