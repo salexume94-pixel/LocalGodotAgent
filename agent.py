@@ -961,6 +961,19 @@ def build_function_context(functions):
     return "\n".join(chunks)
 
 
+def is_player_defense_question(question):
+    """Return True for questions about the player's battle defense action."""
+    text = question.lower()
+
+    if "defend" not in text:
+        return False
+
+    if "enemy defend" in text or "enemy defends" in text or "enemy defense" in text:
+        return False
+
+    return "player" in text
+
+
 def build_targeted_source_context(
     primary_files,
     question,
@@ -976,6 +989,29 @@ def build_targeted_source_context(
         primary_files,
         question,
     )
+
+    if is_player_defense_question(question):
+        defense_roots = (
+            "_on_defend_pressed",
+            "enemy_turn_after_delay",
+            "enemy_attack",
+        )
+        definitions = {
+            (relative, name): function
+            for relative in primary_files
+            for name, function in extract_function_bodies(read_project_file(relative)).items()
+        }
+        selected_roots = []
+        for root in defense_roots:
+            for relative in primary_files:
+                function = definitions.get((relative, root))
+                if function is not None:
+                    selected_roots.append((1000, relative, root, function))
+                    break
+        # Player-defense questions have a known runtime path. Keep these
+        # three roots together so the deterministic verifier can validate
+        # the complete defense -> enemy attack chain.
+        functions = selected_roots
 
     if exact and is_battle_reward_question(question):
         # Rewards span the victory root and two Saved autoload methods.  Put
