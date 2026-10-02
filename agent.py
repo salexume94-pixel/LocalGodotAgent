@@ -1151,12 +1151,19 @@ EVIDENCE PRIORITY:
 3. AGENTS.md, which describes project rules and workflow.
 4. AGENT_MEMORY.md and DEVELOPMENT_LOG.md only as navigation/history context.
 
+When VERIFIED FUNCTION ROLES are present, treat the actor/target
+classification as source-derived evidence. A function classified as
+player -> enemy MUST NOT be used to explain enemy -> player damage, and vice
+versa.
+
 When VERIFIED SOURCE FACTS are present, treat them as a checked summary of
 operations literally found in the supplied source. Do not contradict them by
 reinterpreting a similarly named function.
 
 Before explaining a calculation, trace:
-ACTION SOURCE -> CALCULATION -> TARGET VARIABLE -> PERSISTED STATE.
+ACTOR -> ACTION FUNCTION -> CALCULATION -> TARGET VARIABLE -> PERSISTED STATE.
+
+Do not merge two different actor/target paths into one calculation chain.
 If that chain is not supported by the supplied evidence, say so.
 
 For every important numeric or state-changing claim, identify the source
@@ -1207,6 +1214,8 @@ def render_deterministic_enemy_damage_trace(question, functions):
     citation = f"[{relative} :: {name} :: lines {function['start_line']}-{function['end_line']}]"
     return "\n".join((
         "DETERMINISTIC SOURCE TRACE",
+        "PATH: enemy -> player. This trace is exclusive to the enemy-to-player damage path.",
+        f"- `enemy_attack()` is the runtime enemy attack root and its damage is applied to `player_HP`. {citation}",
         f"- The enemy gets a combat action from `enemy_model.choose_combat_action()`. {citation}",
         f"- A defensive action marks the enemy as defending and returns before damage is calculated or applied. {citation}",
         f"- Otherwise, `rolled_damage` is enemy attack power plus the configured random roll. {citation}",
@@ -1215,6 +1224,7 @@ def render_deterministic_enemy_damage_trace(question, functions):
         f"- A successful player dodge sets damage to zero. {citation}",
         f"- If the player was defending and did not dodge, the current damage is reduced to 35%; a successful parry then sets it to zero. {citation}",
         f"- The resulting damage is subtracted from `player_HP`, copied to `Saved.player_hp`, and the HUD is updated. {citation}",
+        "- `_deal_damage_to_enemy()` is a separate player -> enemy path and must not be included in this enemy -> player calculation.",
         "\nUNKNOWN",
         "- The selected code does not determine the specific action, random roll, dodge, defense, or parry result for an individual battle.",
     ))
