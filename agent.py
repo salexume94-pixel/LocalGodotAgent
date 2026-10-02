@@ -1074,30 +1074,86 @@ def is_development_history_related(question):
     """Return True when the question needs historical development context."""
     text = question.lower()
     explicit_phrases = (
-        "development history", "development log", "history of", "what did we do",
-        "what have we done", "what changed", "what was changed", "what did i change",
-        "why did we change", "previous implementation", "previous behavior",
-        "previous behaviour", "earlier implementation", "earlier behavior",
-        "earlier behaviour", "before the change", "after the change", "recent changes",
-        "recent work", "last change", "known bug", "known bugs", "architecture decision",
+        "development history", "development log", "dev log", "devlog",
+        "history of", "what did we do", "what have we done", "what changed",
+        "what was changed", "what did i change", "why did we change",
+        "previous implementation", "previous behavior", "previous behaviour",
+        "earlier implementation", "earlier behavior", "earlier behaviour",
+        "before the change", "after the change", "recent changes", "recent work",
+        "last change", "known bug", "known bugs", "architecture decision",
         "architectural decision", "historical", "originally", "used to", "regression",
-        "when did we add", "when was it added", "when did we remove", "when was it removed",
+        "when did we add", "when was it added", "when did we remove",
+        "when was it removed",
     )
     if any(phrase in text for phrase in explicit_phrases):
         return True
-    history_terms = {"previous", "prior", "earlier", "history", "historical", "recent",
-                     "originally", "changed", "change", "implemented", "added", "removed",
-                     "replaced", "migrated", "decision", "decisions", "regression"}
+
+    history_terms = {
+        "previous", "prior", "earlier", "history", "historical", "recent",
+        "originally", "changed", "change", "implemented", "added", "removed",
+        "replaced", "migrated", "decision", "decisions", "regression",
+    }
     words = set(re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text))
     return len(words.intersection(history_terms)) >= 2
 
 
+def is_development_log_beginning_request(question):
+    """Return True when the question asks for the beginning of the development log."""
+    text = question.lower()
+
+    beginning_phrases = (
+        "first few lines",
+        "first lines",
+        "first line",
+        "beginning",
+        "start of",
+        "top of",
+        "first part",
+        "opening lines",
+    )
+
+    log_phrases = (
+        "development log",
+        "dev log",
+        "devlog",
+    )
+
+    return (
+        any(phrase in text for phrase in beginning_phrases)
+        and any(phrase in text for phrase in log_phrases)
+    )
+
+
+def build_deterministic_development_log_answer(question):
+    """Return exact beginning-of-log content for direct DevLog requests."""
+    if not is_development_log_beginning_request(question):
+        return None
+
+    development_log = read_project_file("DEVELOPMENT_LOG.md").strip()
+
+    if not development_log:
+        return "The development log is empty."
+
+    if development_log.startswith("[ERROR:"):
+        return development_log
+
+    lines = development_log.splitlines()
+    preview = lines[:12]
+
+    return "The first lines of DEVELOPMENT_LOG.md are:\n\n" + "\n".join(preview)
+
+
 def retrieve_relevant_development_history(question):
-    """Retrieve only development-log sections relevant to the question."""
+    """Retrieve only development-log content relevant to the question."""
     development_log = read_project_file("DEVELOPMENT_LOG.md").strip()
 
     if not development_log:
         return "(Development log is empty.)"
+
+    if is_development_log_beginning_request(question):
+        lines = development_log.splitlines()
+        preview = lines[:12]
+        return "\n".join(preview)
 
     if development_log.startswith("[ERROR:"):
         return development_log
@@ -1986,6 +2042,13 @@ def print_context_diagnostics(context, prompt):
 
 
 def handle_ask(question):
+    deterministic_development_log_answer = (
+        build_deterministic_development_log_answer(question)
+    )
+    if deterministic_development_log_answer is not None:
+        print("\n" + deterministic_development_log_answer)
+        return
+
     print("\nAnalyzing question...")
 
     start = time.time()

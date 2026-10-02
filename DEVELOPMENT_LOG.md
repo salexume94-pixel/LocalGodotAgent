@@ -67,3 +67,28 @@ The runtime is still slow on the current local hardware, but the verification ob
 Player-defense deterministic verification is working and has been runtime-tested.
 
 Next development should preserve the deterministic trace and validator architecture while extending verification coverage only where needed.
+
+## 2026-10-02 — Development-Log Retrieval and Qwen 3B Baseline
+
+* Development-history detection now recognizes `dev log` and `devlog` in addition to `development log`.
+* Added direct detection for requests asking for the beginning of the development log, including "first few lines", "first lines", "beginning", "start of", "top of", "first part", and "opening lines".
+* Added a deterministic development-log answer path so exact beginning-of-log requests read directly from `DEVELOPMENT_LOG.md` instead of invoking the language model.
+* Verified the deterministic path successfully returned the first lines of `DEVELOPMENT_LOG.md` without an Ollama request.
+* Tested a normal development-history question, "what changes were made to enemy balance", through the existing Qwen 2.5 Coder 3B reasoning path.
+* The Qwen 3B test took 344.9 seconds total: 210.9 seconds prompt evaluation, 127.9 seconds response generation, 3.9 seconds model load, with 3,824 prompt tokens and 600 generated tokens.
+* The response contained source-mixing and actor attribution errors despite 6,257 characters of targeted source evidence being supplied. In particular, the response incorrectly described the player-defense 35% damage reduction as enemy defense behavior and included additional unsupported enemy/player balance claims.
+* This establishes the Qwen 2.5 Coder 3B runtime and answer quality as the baseline for comparison.
+* **Attempting to downgrade to see whether a 1.5B–2B model plus our deterministic evidence/validation architecture can give us a sufficiently accurate answer in a fraction of previous times.**
+
+### Verification
+
+* `python -m py_compile .\agent.py` passed.
+* `git diff --check` passed.
+* Deterministic beginning-of-log retrieval was runtime-tested successfully.
+* Qwen 2.5 Coder 3B baseline test completed with the timing and output-quality issues documented above.
+
+### Status
+
+* Development-log retrieval fix is working.
+* Qwen 2.5 Coder 3B remains installed as the comparison/control model.
+* Smaller-model downgrade testing is the next planned step.
