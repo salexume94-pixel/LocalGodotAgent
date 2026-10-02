@@ -1096,7 +1096,20 @@ If the supplied context is insufficient, say:
 "This cannot be determined from the supplied code."
 
 Do not assume generic RPG behavior.
-"""
+
+EXECUTION-DIRECTION RULES:
+- Determine who performs the action and who receives its effect from the
+  actual call path and variable mutations.
+- Never infer a function's role from its name alone.
+- If two functions have similar names, distinguish them by callers and the
+  variables they mutate.
+- For enemy-to-player damage, `enemy_attack` is the runtime attack path when
+  the supplied source shows it mutating `player_HP` or `Saved.player_hp`.
+- `_deal_damage_to_enemy` is not enemy-to-player damage merely because it
+  contains the word "damage"; if the supplied source shows it mutating
+  `enemy_HP`, describe it as damage to the enemy.
+- Do not reverse attacker and target when summarizing calculations.
+- Preserve the direction of every subtraction, assignment, and function call.
 
     if exact:
         response_format = """
@@ -1132,6 +1145,24 @@ PROJECT EVIDENCE:
 
 Answer using only the supplied project evidence.
 
+EVIDENCE PRIORITY:
+1. VERIFIED SOURCE FACTS supplied by the Python agent.
+2. Actual source-code functions and resource values.
+3. AGENTS.md, which describes project rules and workflow.
+4. AGENT_MEMORY.md and DEVELOPMENT_LOG.md only as navigation/history context.
+
+When VERIFIED SOURCE FACTS are present, treat them as a checked summary of
+operations literally found in the supplied source. Do not contradict them by
+reinterpreting a similarly named function.
+
+Before explaining a calculation, trace:
+ACTION SOURCE -> CALCULATION -> TARGET VARIABLE -> PERSISTED STATE.
+If that chain is not supported by the supplied evidence, say so.
+
+For every important numeric or state-changing claim, identify the source
+function that supports it. Do not silently combine operations from unrelated
+functions.
+
 {response_format}
 
 Do not write code unless the user explicitly asks for code.
@@ -1146,7 +1177,7 @@ def render_deterministic_enemy_damage_trace(question, functions):
     literally present in the selected enemy_attack function.
     """
     text = question.lower()
-    if "damage" not in text or "player" not in text:
+    if "damage" not in text:
         return None
     if not any(term in text for term in ENEMY_TERMS):
         return None
@@ -1417,37 +1448,42 @@ def handle_ask(question):
             "\nUsing focused context."
         )
 
-    deterministic_trace = (
-        render_deterministic_enemy_damage_trace(question, functions)
-        if exact
-        else None
+    # Reliability-critical traces are supplied to Qwen as verified
+    # evidence rather than replacing the model's explanation.
+    verified_trace = render_deterministic_enemy_damage_trace(
+        question,
+        functions,
     )
 
-    if deterministic_trace is None and exact:
-        deterministic_trace = render_deterministic_player_damage_trace(
+    if verified_trace is None:
+        verified_trace = render_deterministic_player_damage_trace(
             question,
             functions,
         )
 
-    if deterministic_trace is None and exact:
-        deterministic_trace = render_deterministic_battle_reward_trace(
+    if verified_trace is None and exact:
+        verified_trace = render_deterministic_battle_reward_trace(
             question,
             functions,
         )
 
-    if deterministic_trace is None and exact:
-        deterministic_trace = render_deterministic_overworld_encounter_trace(
+    if verified_trace is None and exact:
+        verified_trace = render_deterministic_overworld_encounter_trace(
             question,
             functions,
         )
 
-    if deterministic_trace:
+    prompt_context = context
+
+    if verified_trace:
+        prompt_context += (
+            "\n\n===== VERIFIED SOURCE FACTS =====\n"
+            + verified_trace
+            + "\n===== END VERIFIED SOURCE FACTS ====="
+        )
         print(
-            "\nThis exact trace was rendered directly "
-            "from the selected source; Ollama was not used.\n"
+            "\nVerified source facts added to the model context."
         )
-        print(deterministic_trace)
-        return
 
     print(
         "\nSending targeted evidence to Ollama..."
@@ -1455,7 +1491,7 @@ def handle_ask(question):
 
     prompt = build_prompt(
         question,
-        context,
+        prompt_context,
         exact,
     )
 
