@@ -1268,10 +1268,14 @@ You MUST NOT:
 
     else:
         instructions = """
-Analyze the supplied project evidence accurately.
+Analyze the supplied project evidence accurately and concisely.
 
 The Python project-analysis agent intentionally provides focused evidence
-rather than entire source files.
+rather than entire source files. When AUTHORITATIVE VERIFIED FACTS are
+supplied, Python has already determined the relevant execution facts from
+the source. Your primary job is to summarize and explain those verified facts
+clearly. Do not independently reconstruct the implementation when the
+verified facts already answer the question.
 
 Never invent files, functions, variables, systems, mechanics, or resource
 values.
@@ -1287,17 +1291,30 @@ If the supplied context is insufficient, say:
 
 Do not assume generic RPG behavior.
 
+SUMMARY RULES:
+- Give the direct answer first.
+- Prefer a short paragraph followed by 3-7 bullets when the process has
+  multiple steps.
+- Summarize verified operations instead of repeating source code.
+- Include exact function or file names when they identify where the behavior
+  occurs.
+- Do not repeat the same fact in multiple sections.
+- Do not discuss the internal Python retrieval process.
+- Do not add unrelated implementation details.
+- Keep normal answers concise enough to finish completely within the response
+  limit. Expand only when the user asks for detail or exact analysis.
+
 EXECUTION-DIRECTION RULES:
 - Determine who performs the action and who receives its effect from the
   actual call path and variable mutations.
-- Never infer a function's role from its name alone.
+- Never infer a function role from its name alone.
 - If two functions have similar names, distinguish them by callers and the
   variables they mutate.
-- For enemy-to-player damage, `enemy_attack` is the runtime attack path when
-  the supplied source shows it mutating `player_HP` or `Saved.player_hp`.
-- `_deal_damage_to_enemy` is not enemy-to-player damage merely because it
+- For enemy-to-player damage, enemy_attack is the runtime attack path when
+  the supplied source shows it mutating player_HP or Saved.player_hp.
+- _deal_damage_to_enemy is not enemy-to-player damage merely because it
   contains the word "damage"; if the supplied source shows it mutating
-  `enemy_HP`, describe it as damage to the enemy.
+  enemy_HP, describe it as damage to the enemy.
 - Do not reverse attacker and target when summarizing calculations.
 - Preserve the direction of every subtraction, assignment, and function call.
 """
@@ -1317,9 +1334,13 @@ For exact implementation analysis, use these sections:
 """
     else:
         response_format = """
-Use clear sections appropriate to the user's question.
-
-Do not write code unless the user explicitly asks for code.
+SUMMARY MODE:
+- Answer directly in the first sentence or two.
+- Use a short paragraph or 3-7 concise bullets.
+- Prefer the smallest complete answer that preserves all verified behavior.
+- Do not create a long numbered tutorial unless the user asks for one.
+- Do not restate the question.
+- Do not write code unless the user explicitly asks for code.
 """
 
     return f"""
@@ -1336,10 +1357,15 @@ PROJECT EVIDENCE:
 Answer using only the supplied project evidence.
 
 EVIDENCE PRIORITY:
-1. VERIFIED SOURCE FACTS supplied by the Python agent.
-2. Actual source-code functions and resource values.
-3. AGENTS.md, which describes project rules and workflow.
-4. AGENT_MEMORY.md and DEVELOPMENT_LOG.md only as navigation/history context.
+1. AUTHORITATIVE VERIFIED FACTS supplied by the Python agent.
+2. VERIFIED SOURCE FACTS, calculation chains, and exact expressions supplied by the Python agent.
+3. Actual source-code functions and resource values.
+4. AGENTS.md, which describes project rules and workflow.
+5. AGENT_MEMORY.md and DEVELOPMENT_LOG.md only as navigation/history context.
+
+When AUTHORITATIVE VERIFIED FACTS are present, they are the deterministic
+source-derived answer basis. Qwen role is to summarize them accurately,
+not to replace them with independent guesses.
 
 When VERIFIED FUNCTION ROLES are present, treat the actor/target
 classification as source-derived evidence. A function classified as
@@ -1688,51 +1714,67 @@ def handle_ask(question):
     prompt_context = context
 
     verified_roles = build_verified_function_roles(functions)
-    prompt_context += (
-        "\n\n===== VERIFIED FUNCTION ROLES =====\n"
-        + verified_roles
-        + "\n===== END VERIFIED FUNCTION ROLES ====="
-    )
 
     verified_calculation = build_verified_calculation_chain(
         question,
         functions,
     )
 
-    if verified_calculation:
-        prompt_context += (
-            "\n\n===== VERIFIED CALCULATION CHAIN =====\n"
-            + verified_calculation
-            + "\n===== END VERIFIED CALCULATION CHAIN ====="
-        )
-        print(
-            "\nVerified calculation chain added to the model context."
-        )
-
     verified_expression = build_verified_calculation_expression(
         question,
         functions,
     )
 
-    if verified_expression:
+    # Normal questions use a compact deterministic evidence package. Python
+    # has already traced the important operations, so Qwen is asked to
+    # summarize those facts instead of independently reconstructing them.
+    if verified_trace and not exact:
         prompt_context += (
-            "\n\n===== VERIFIED CALCULATION EXPRESSIONS =====\n"
-            + verified_expression
-            + "\n===== END VERIFIED CALCULATION EXPRESSIONS ====="
+            "\n\n===== AUTHORITATIVE VERIFIED FACTS =====\n"
+            + verified_trace
+            + "\n===== END AUTHORITATIVE VERIFIED FACTS ====="
         )
         print(
-            "\nVerified calculation expressions added to the model context."
+            "\nAuthoritative verified facts added to summary context."
+        )
+    else:
+        # Exact-analysis mode keeps the richer evidence package so detailed
+        # forensic questions still have the underlying expressions and roles.
+        prompt_context += (
+            "\n\n===== VERIFIED FUNCTION ROLES =====\n"
+            + verified_roles
+            + "\n===== END VERIFIED FUNCTION ROLES ====="
         )
 
-    if verified_trace:
-        prompt_context += (
-            "\n\n===== VERIFIED SOURCE FACTS =====\n"
-            + verified_trace
-            + "\n===== END VERIFIED SOURCE FACTS ====="
-        )
-        print(
-            "\nVerified source facts added to the model context."
-        )
+        if verified_calculation:
+            prompt_context += (
+                "\n\n===== VERIFIED CALCULATION CHAIN =====\n"
+                + verified_calculation
+                + "\n===== END VERIFIED CALCULATION CHAIN ====="
+            )
+            print(
+                "\nVerified calculation chain added to the model context."
+            )
+
+        if verified_expression:
+            prompt_context += (
+                "\n\n===== VERIFIED CALCULATION EXPRESSIONS =====\n"
+                + verified_expression
+                + "\n===== END VERIFIED CALCULATION EXPRESSIONS ====="
+            )
+            print(
+                "\nVerified calculation expressions added to the model context."
+            )
+
+        if verified_trace:
+            prompt_context += (
+                "\n\n===== VERIFIED SOURCE FACTS =====\n"
+                + verified_trace
+                + "\n===== END VERIFIED SOURCE FACTS ====="
+            )
+            print(
+                "\nVerified source facts added to the model context."
+            )
 
     print(
         "\nSending targeted evidence to Ollama..."
@@ -1798,47 +1840,3 @@ def command_loop():
             if not query:
                 print("Usage: search <term>")
                 continue
-
-            results = search_files(query)
-
-            if not results:
-                print("\nNo matching files found.")
-                continue
-
-            print(f"\nFound {len(results)} matching files:\n")
-
-            for relative in results:
-                print(relative)
-
-            continue
-
-        if command.lower().startswith("read "):
-            relative = command[5:].strip()
-
-            if not relative:
-                print("Usage: read <path>")
-                continue
-
-            print(f"\n===== {relative} =====")
-            print(read_project_file(relative))
-            print(f"===== END {relative} =====")
-            continue
-
-        if command.lower().startswith("ask "):
-            question = command[4:].strip()
-
-            if not question:
-                print("Usage: ask <question>")
-                continue
-
-            try:
-                handle_ask(question)
-            except Exception as exc:
-                print("\nAgent error:")
-                print(f"{type(exc).__name__}: {exc}")
-            continue
-
-        print("Unknown command. Use: list, search <term>, read <path>, ask <question>, quit")
-
-if __name__ == "__main__":
-    command_loop()
