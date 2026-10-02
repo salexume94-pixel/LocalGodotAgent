@@ -1110,7 +1110,7 @@ EXECUTION-DIRECTION RULES:
   `enemy_HP`, describe it as damage to the enemy.
 - Do not reverse attacker and target when summarizing calculations.
 - Preserve the direction of every subtraction, assignment, and function call.
-
+"""
     if exact:
         response_format = """
 For exact implementation analysis, use these sections:
