@@ -1461,10 +1461,6 @@ CALCULATION INTEGRITY:
 
 Do not write code unless the user explicitly asks for code.
 """
-
-
-def render_deterministic_enemy_damage_trace(question, functions):
-"""
     print_prompt_component_diagnostics(
         question,
         context,
@@ -1473,7 +1469,12 @@ def render_deterministic_enemy_damage_trace(question, functions):
         final_prompt,
     )
     return final_prompt
-Return a source-derived trace for the known enemy-to-player path.
+
+
+def render_deterministic_enemy_damage_trace(question, functions):
+    """
+    Return a source-derived trace for the known enemy-to-player path.
+
 
     Arithmetic and ownership are reliability-critical here.  The 3B model is
     intentionally bypassed only after confirming every reported operation is
