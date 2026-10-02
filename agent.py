@@ -512,6 +512,81 @@ def build_verified_function_roles(functions):
     return "\n".join(lines)
 
 
+def user_requested_numeric_example(question):
+    """Return True only when the user explicitly asks for a numeric example/calculation."""
+    text = question.lower()
+    phrases = (
+        "numeric example", "numerical example", "give me an example",
+        "show me an example", "example with numbers", "calculate an example",
+        "walk me through an example", "use numbers", "with actual numbers",
+    )
+    return any(phrase in text for phrase in phrases)
+
+
+def build_verified_calculation_expression(question, functions):
+    """Extract exact arithmetic expressions and literal constants from enemy_attack()."""
+    text = question.lower()
+    enemy_to_player = (
+        "damage" in text
+        and any(term in text for term in ENEMY_TERMS)
+        and not any(
+            phrase in text
+            for phrase in (
+                "player attack",
+                "player's attack",
+                "player attacks",
+                "damage by the player",
+            )
+        )
+    )
+    if not enemy_to_player:
+        return None
+
+    attack = next(
+        (item for item in functions if item[2] == "enemy_attack"),
+        None,
+    )
+    if attack is None:
+        return None
+
+    _, relative, name, function = attack
+    lines = function["body"].splitlines()
+    arithmetic = []
+    constants = []
+    arithmetic_pattern = re.compile(
+        r"\b(?:rolled_damage|damage|player_HP|Saved\.player_hp)\s*(?:\+|-|\*|/|=).+"
+    )
+    constant_pattern = re.compile(
+        r"^\s*([A-Z][A-Z0-9_]*)\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*$"
+    )
+
+    for index, line in enumerate(lines, start=function["start_line"]):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if arithmetic_pattern.search(stripped):
+            arithmetic.append(f"- line {index}: {stripped}")
+        constant_match = constant_pattern.match(stripped)
+        if constant_match:
+            constants.append(
+                f"- line {index}: {constant_match.group(1)} = {constant_match.group(2)}"
+            )
+
+    citation = (
+        f"[{relative} :: {name} :: "
+        f"lines {function['start_line']}-{function['end_line']}]"
+    )
+
+    return "\n".join((
+        "VERIFIED CALCULATION EXPRESSIONS",
+        f"SOURCE: {citation}",
+        "The following expressions are copied from enemy_attack() source. Do not reconstruct them from prose.",
+        *(arithmetic or ["- No direct arithmetic assignment was extracted."]),
+        "LITERAL CONSTANTS DEFINED INSIDE enemy_attack():",
+        *(constants or ["- None. Constants referenced by enemy_attack() must be verified from their defining source before use."]),
+    ))
+
+
 def build_verified_calculation_chain(question, functions):
     """Build a source-derived calculation chain without unrelated numeric evidence."""
     text = question.lower()
@@ -1286,9 +1361,11 @@ function that supports it. Do not silently combine operations from unrelated
 functions.
 
 CALCULATION INTEGRITY:
+- When VERIFIED CALCULATION EXPRESSIONS is present, preserve those exact expressions and their order.
 - When VERIFIED CALCULATION CHAIN is present, it is the authoritative calculation path.
-- Do not merge values or operations from unrelated functions, reward systems, or resource fields into that chain.
-- Do not create hypothetical numeric examples unless the user explicitly asks for one.
+- Do not reconstruct arithmetic from memory when an exact expression is supplied.
+- If the user did not explicitly request a numeric example, do not provide any numeric example, hypothetical numbers, assumed rolls, or sample calculation.
+- If the user explicitly requests a numeric example, use only literal values directly established by the supplied source evidence. If a needed runtime/random value is not established, state: "This cannot be determined from the supplied code."
 - Never invent constants, stat values, random-roll results, multipliers, HP values, XP values, gold values, or item values.
 - A value appearing in the selected enemy resource is not automatically an input to the calculation. Use it only when the supplied runtime code explicitly connects that field to the calculation.
 - XP, gold, loot, reward-item, and reward-chance fields are excluded from enemy damage unless the supplied source explicitly proves a connection.
@@ -1632,6 +1709,21 @@ def handle_ask(question):
             "\nVerified calculation chain added to the model context."
         )
 
+    verified_expression = build_verified_calculation_expression(
+        question,
+        functions,
+    )
+
+    if verified_expression:
+        prompt_context += (
+            "\n\n===== VERIFIED CALCULATION EXPRESSIONS =====\n"
+            + verified_expression
+            + "\n===== END VERIFIED CALCULATION EXPRESSIONS ====="
+        )
+        print(
+            "\nVerified calculation expressions added to the model context."
+        )
+
     if verified_trace:
         prompt_context += (
             "\n\n===== VERIFIED SOURCE FACTS =====\n"
@@ -1645,6 +1737,13 @@ def handle_ask(question):
     print(
         "\nSending targeted evidence to Ollama..."
     )
+
+    if not user_requested_numeric_example(question):
+        prompt_context += (
+            "\n\n===== RESPONSE CONSTRAINT =====\n"
+            "NO NUMERIC EXAMPLE REQUESTED: Do not provide hypothetical numbers, assumed rolls, or sample calculations.\n"
+            "===== END RESPONSE CONSTRAINT ====="
+        )
 
     prompt = build_prompt(
         question,
