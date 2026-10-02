@@ -1702,5 +1702,44 @@ def command_loop():
 
             results = search_files(query)
 
+            if not results:
+                print("\nNo matching files found.")
+                continue
+
+            print(f"\nFound {len(results)} matching files:\n")
+
+            for relative in results:
+                print(relative)
+
+            continue
+
+        if command.lower().startswith("read "):
+            relative = command[5:].strip()
+
+            if not relative:
+                print("Usage: read <path>")
+                continue
+
+            print(f"\n===== {relative} =====")
+            print(read_project_file(relative))
+            print(f"===== END {relative} =====")
+            continue
+
+        if command.lower().startswith("ask "):
+            question = command[4:].strip()
+
+            if not question:
+                print("Usage: ask <question>")
+                continue
+
+            try:
+                handle_ask(question)
+            except Exception as exc:
+                print("\nAgent error:")
+                print(f"{type(exc).__name__}: {exc}")
+            continue
+
+        print("Unknown command. Use: list, search <term>, read <path>, ask <question>, quit")
+
 if __name__ == "__main__":
     command_loop()
