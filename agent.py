@@ -1840,3 +1840,7 @@ def command_loop():
             if not query:
                 print("Usage: search <term>")
                 continue
+
+
+if __name__ == "__main__":
+    command_loop()
