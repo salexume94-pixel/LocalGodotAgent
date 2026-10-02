@@ -1529,6 +1529,70 @@ def render_deterministic_player_damage_trace(question, functions):
     ))
 
 
+def render_deterministic_player_defense_trace(question, functions):
+    """Render the player-defense path from the player action through enemy resolution."""
+    text = question.lower()
+    if "defend" not in text:
+        return None
+    if "enemy defend" in text or "enemy defends" in text or "enemy defense" in text:
+        return None
+    if "player" not in text:
+        return None
+
+    defend = next((item for item in functions if item[2] == "_on_defend_pressed"), None)
+    enemy_turn = next((item for item in functions if item[2] == "enemy_turn_after_delay"), None)
+    enemy_attack = next((item for item in functions if item[2] == "enemy_attack"), None)
+    if defend is None or enemy_turn is None or enemy_attack is None:
+        return None
+
+    _, defend_file, defend_name, defend_function = defend
+    _, turn_file, turn_name, turn_function = enemy_turn
+    _, attack_file, attack_name, attack_function = enemy_attack
+
+    required_defend = (
+        "player_turn = false",
+        "is_defending = true",
+        "update_action_buttons()",
+        "await enemy_turn_after_delay()",
+    )
+    required_turn = (
+        "await enemy_attack()",
+    )
+    required_attack = (
+        "var was_defending: bool = is_defending",
+        "is_defending = false",
+        "elif was_defending:",
+        "damage = ceili(float(damage) * 0.35)",
+        "var parry_chance: int = clampi(",
+        "if parried:",
+        "damage = 0",
+    )
+
+    if not all(fragment in defend_function["body"] for fragment in required_defend):
+        return None
+    if not all(fragment in turn_function["body"] for fragment in required_turn):
+        return None
+    if not all(fragment in attack_function["body"] for fragment in required_attack):
+        return None
+
+    defend_citation = f"[{defend_file} :: {defend_name} :: lines {defend_function['start_line']}-{defend_function['end_line']}]"
+    turn_citation = f"[{turn_file} :: {turn_name} :: lines {turn_function['start_line']}-{turn_function['end_line']}]"
+    attack_citation = f"[{attack_file} :: {attack_name} :: lines {attack_function['start_line']}-{attack_function['end_line']}]"
+
+    return "\n".join((
+        "DETERMINISTIC SOURCE TRACE",
+        "PATH: player defend -> enemy attack resolution.",
+        f"- `_on_defend_pressed()` ends the player's turn, sets `is_defending = true`, updates the action buttons, and starts `enemy_turn_after_delay()`. {defend_citation}",
+        f"- `enemy_turn_after_delay()` waits briefly, then calls `enemy_attack()`. {turn_citation}",
+        f"- `enemy_attack()` captures the player's defense state in `was_defending` and clears `is_defending`. {attack_citation}",
+        f"- If the player was defending and did not dodge, incoming damage is reduced to 35%. {attack_citation}",
+        f"- While defending, the code calculates a parry chance from 10 + effective luck + twice effective defense, clamped from 10% through 75%; a successful parry sets damage to zero. {attack_citation}",
+        f"- Therefore, defending does not guarantee zero damage. It reduces the incoming damage and can completely negate it when the parry succeeds. {attack_citation}",
+        "\nUNKNOWN",
+        "- The selected code does not determine the particular dodge or parry roll for an individual attack.",
+    ))
+
+
 def render_deterministic_battle_reward_trace(question, functions):
     """Render battle victory rewards from the runtime reward and XP methods."""
     if not is_battle_reward_question(question):
@@ -1663,6 +1727,27 @@ def validate_response(response, question, verified_trace):
         verified_trace is not None
         and "path: enemy -> player" in verified_trace.lower()
     )
+    player_defense = (
+        verified_trace is not None
+        and "path: player defend -> enemy attack resolution." in verified_trace.lower()
+    )
+
+    if player_defense:
+        forbidden_phrases = (
+            "enemy_is_defending",
+            "enemy is defending",
+            "enemy prepares to reduce",
+            "enemy prepares to defend",
+            "player_turn = true",
+            "prevents the enemy from dealing any damage",
+            "prevents all damage",
+            "prevents any damage",
+            "takes no damage",
+        )
+
+        for phrase in forbidden_phrases:
+            if phrase in text:
+                issues.append(f"contradicts verified player-defense path: {phrase}")
 
     if enemy_to_player:
         forbidden_terms = {
@@ -1731,6 +1816,22 @@ def build_deterministic_fallback(question, verified_trace):
     """
     if verified_trace is None:
         return None
+
+    if "PATH: player defend -> enemy attack resolution." in verified_trace:
+        return (
+            "Player defense is handled by _on_defend_pressed() in "
+            "battlescreen.gd. The verified path is:\n"
+            "- The player's turn ends and is_defending is set to true.\n"
+            "- The action buttons are updated, then enemy_turn_after_delay() "
+            "runs and calls enemy_attack().\n"
+            "- enemy_attack() captures that defense state, clears it, and "
+            "reduces incoming damage to 35% when the player was defending "
+            "and did not dodge.\n"
+            "- A successful parry then reduces the damage to zero.\n"
+            "- Therefore, defending reduces the next incoming hit and can "
+            "completely negate it with a successful parry; it does not "
+            "automatically prevent all damage."
+        )
 
     if "PATH: enemy -> player" in verified_trace:
         return (
@@ -1826,6 +1927,12 @@ def handle_ask(question):
 
     if verified_trace is None:
         verified_trace = render_deterministic_player_damage_trace(
+            question,
+            functions,
+        )
+
+    if verified_trace is None:
+        verified_trace = render_deterministic_player_defense_trace(
             question,
             functions,
         )
