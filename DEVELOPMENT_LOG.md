@@ -135,3 +135,33 @@ Next development should preserve the deterministic trace and validator architect
 * Qwen 2.5 Coder 3B remains installed as the control model.
 * Qwen 2.5 Coder 7B remains installed but was not part of this comparison.
 * The next diagnostic should test 1.5B against an existing deterministic verification path, such as player-defense, before making architectural changes.
+
+
+## 2026-10-02 - Qwen 1.5B Player-Defense Repetition Failure
+
+* Tested the active Qwen 2.5 Coder 1.5B model against the existing deterministic player-defense verification path using the question: `ask how does player defense work when the enemy attacks?`.
+* The targeted retrieval pipeline remained stable. The final prompt was 15,841 characters, the context was 10,089 characters, and the estimated prompt size was approximately 3,960 tokens.
+* Ollama reported 3,826 prompt tokens and 600 generated tokens.
+* Ollama total duration was 160.3 seconds and the measured model time was 162.4 seconds.
+* Model load time was 2.1 seconds.
+* Prompt evaluation took 92.6 seconds.
+* Response generation took 65.6 seconds.
+* The model did not follow the deterministic player-defense trace. Instead, it repeatedly stated that the player's defense is not reduced by the enemy's attack and continued repeating the same sentence until reaching the 600-token generation limit.
+* The response therefore represents a generation/repetition failure rather than a useful interpretation of the supplied verified combat path.
+* The failure is notable because the deterministic source trace already established the relevant path: player defense ends the player's turn, sets `is_defending`, leads into `enemy_attack()`, reduces incoming damage to 35% when applicable, and can parry the attack for zero damage.
+* No retrieval, prompt, deterministic-trace, or validator architecture changes were made during this test.
+* The result confirms that the 1.5B model is substantially faster than 3B but can still fail to terminate coherently even when authoritative deterministic facts are supplied.
+
+### Verification
+
+* Runtime diagnostics were captured from the 1.5B player-defense test.
+* The targeted source evidence and deterministic trace were present in the prompt package.
+* The response reached the 600-token generation ceiling and exhibited obvious repeated-sentence behavior.
+* No source-code or retrieval changes were made for this diagnostic.
+
+### Status
+
+* Qwen 2.5 Coder 1.5B remains the active test model.
+* The next controlled change should be limited to deterministic repetition detection in `validate_response()`, with the existing deterministic fallback used when a response contains a clear repetition loop.
+* Retrieval, prompt construction, deterministic player-defense tracing, and model selection should remain unchanged for that test.
+* After the validator change, rerun the same player-defense question and compare whether the repeated output is rejected and replaced by the verified deterministic fallback.
