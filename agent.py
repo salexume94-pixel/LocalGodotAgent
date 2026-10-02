@@ -1701,3 +1701,6 @@ def command_loop():
                 continue
 
             results = search_files(query)
+
+if __name__ == "__main__":
+    command_loop()
