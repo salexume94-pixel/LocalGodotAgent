@@ -303,7 +303,7 @@ def ask_model(prompt, response_schema=None):
             "temperature": 0.1,
             "top_p": 0.9,
             "num_ctx": 16384,
-            "num_predict": 300,
+            "num_predict": 800,
         },
     }
 
